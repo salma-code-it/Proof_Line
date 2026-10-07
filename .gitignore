@@ -1,0 +1,26 @@
+backend/README.md
+frontend/README.md
+__pycache__/
+*.ipynb_checkpoints/
+*.ipynb
+# Virtual environment
+venv/
+.venv/   
+
+# Environment variables
+.env
+.env.example
+
+# SQLite
+*.db
+
+# IDE
+.vscode/
+
+# Node
+node_modules/
+dist/
+
+# Logs
+*.log
+
