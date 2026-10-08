@@ -5,119 +5,123 @@ const teal = "#0a8f6c";
 const border = "#cdd5df";
 const muted = "#5b6678";
 const light = "#f1f3f5";
+const gray = "#8a95a6";
 
-export function EvidenceUnderstandingChart({
-  data = [],
-  projectId,
-}) {
-  const maxEvidence = Math.max(
-    1,
-    ...data.map((item) => Number(item.evidence) || 0)
-  );
-
+export function EvidenceUnderstandingChart({ data = [] }) {
   if (!data.length) {
-    return <EmptyChart message="No member evidence is available yet." />;
+    return (
+      <div className="border border-[#cdd5df] rounded-lg bg-white p-6">
+        <div className="text-sm font-semibold text-[#12203a]">
+          Evidence Understanding
+        </div>
+        <p className="mt-2 text-sm text-gray-500">
+          No evidence understanding data is available.
+        </p>
+      </div>
+    );
   }
 
+  // Accept several possible data shapes from the analysis response.
+  const normalized = data
+    .map((item) => {
+      const label =
+        item.label ||
+        item.name ||
+        item.type ||
+        item.category ||
+        "Unknown";
+
+      const value = Number(
+        item.value ??
+          item.count ??
+          item.total ??
+          item.events ??
+          item.evidence ??
+          0
+      );
+
+      return {
+        label,
+        value: Number.isFinite(value) ? value : 0,
+      };
+    })
+    .filter((item) => item.value >= 0);
+
+  if (!normalized.length) {
+    return (
+      <div className="border border-[#cdd5df] rounded-lg bg-white p-6">
+        <div className="text-sm font-semibold text-[#12203a]">
+          Evidence Understanding
+        </div>
+        <p className="mt-2 text-sm text-gray-500">
+          No evidence understanding data is available.
+        </p>
+      </div>
+    );
+  }
+
+  const maxValue = Math.max(...normalized.map((item) => item.value), 1);
+
   return (
-    <div className="relative h-[360px] rounded-lg border border-[#cdd5df] bg-[#f1f3f5] p-8">
-      <div className="absolute left-8 right-8 top-8 bottom-10 border-l border-b border-[#cdd5df]">
-        {[25, 50, 75].map((value) => (
-          <div
-            key={value}
-            className="absolute left-0 right-0 border-t border-[#cdd5df]/60"
-            style={{ bottom: `${value}%` }}
-          />
-        ))}
+    <div className="border border-[#cdd5df] rounded-lg bg-white p-6">
+      <div className="flex items-start justify-between gap-4 mb-6">
+        <div>
+          <h3 className="text-sm font-semibold text-[#12203a]">
+            Evidence Understanding
+          </h3>
+          <p className="mt-1 text-xs text-gray-500">
+            Distribution of the evidence collected for the project.
+          </p>
+        </div>
 
-        {data.map((item) => {
-          const x =
-            (Math.min(Number(item.evidence) || 0, maxEvidence) /
-              maxEvidence) *
-            100;
+        <div className="text-xs text-gray-400">
+          {normalized.length} categories
+        </div>
+      </div>
 
-          const hasUnderstanding =
-            item.understanding !== null &&
-            item.understanding !== undefined &&
-            Number.isFinite(Number(item.understanding));
+      <div className="space-y-4">
+        {normalized.map((item, index) => {
+          const percentage =
+            maxValue > 0 ? (item.value / maxValue) * 100 : 0;
 
-          const y = hasUnderstanding
-            ? Math.max(0, Math.min(100, Number(item.understanding)))
-            : 2;
+          return (
+            <div key={`${item.label}-${index}`}>
+              <div className="flex items-center justify-between gap-4 mb-1.5">
+                <span className="text-sm text-[#12203a] truncate">
+                  {item.label}
+                </span>
 
-          const content = (
-            <div className="group relative">
-              <div
-                className={[
-                  "w-4 h-4 rounded-full ring-4 ring-white shadow-sm transition-transform group-hover:scale-125",
-                  hasUnderstanding
-                    ? "bg-[#0a8f6c]"
-                    : "bg-[#8a95a6]",
-                ].join(" ")}
-              />
-              <div className="absolute left-1/2 bottom-7 -translate-x-1/2 hidden group-hover:block z-20 whitespace-nowrap rounded-md bg-[#12203a] text-white px-2 py-1 text-[10px]">
-                {item.name}: {item.evidence} evidence
-                {hasUnderstanding
-                  ? ` • Understanding ${item.understanding}/100`
-                  : " • Understanding not evaluated"}
+                <span className="text-sm font-semibold text-[#12203a]">
+                  {item.value}
+                </span>
               </div>
-            </div>
-          );
 
-          return projectId && item.id ? (
-            <a
-              key={item.id}
-              href={`/project/${projectId}/member/${item.id}`}
-              className="absolute -translate-x-1/2 translate-y-1/2"
-              style={{
-                left: `${x}%`,
-                bottom: `${y}%`,
-              }}
-            >
-              {content}
-            </a>
-          ) : (
-            <div
-              key={item.name}
-              className="absolute -translate-x-1/2 translate-y-1/2"
-              style={{
-                left: `${x}%`,
-                bottom: `${y}%`,
-              }}
-            >
-              {content}
+              <div className="h-2 rounded-full bg-[#f1f3f5] overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-[#0a8f6c] transition-all"
+                  style={{
+                    width: `${Math.max(percentage, item.value > 0 ? 3 : 0)}%`,
+                  }}
+                />
+              </div>
             </div>
           );
         })}
       </div>
-
-      <span className="absolute left-1/2 bottom-2 -translate-x-1/2 text-[10px] font-bold uppercase tracking-wider text-[#5b6678]">
-        Observable GitHub Evidence
-      </span>
-
-      <span className="absolute left-0 top-1/2 -translate-y-1/2 -rotate-90 text-[10px] font-bold uppercase tracking-wider text-[#5b6678]">
-        Understanding
-      </span>
-
-      <div className="absolute top-3 right-4 flex items-center gap-4 text-[10px] text-[#5b6678]">
-        <span className="flex items-center gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-full bg-[#0a8f6c]" />
-          Evaluated
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-full bg-[#8a95a6]" />
-          Not evaluated
-        </span>
-      </div>
     </div>
   );
 }
-
-export function TaskMemberChart({ evidenceGraph }) {
-  const rows = normalizeGraph(evidenceGraph);
+export function TaskMemberChart({ evidenceGraph, taskAnalysis = [] }) {
+  const graphRows = normalizeGraph(evidenceGraph);
+  const rows =
+    graphRows.length > 0
+      ? graphRows
+      : normalizeTaskAnalysis(taskAnalysis);
 
   if (!rows.length) {
-    return <EmptyChart message="No task/member evidence relationships are available." />;
+    return (
+      <EmptyChart message="No task/member evidence relationships are available." />
+    );
   }
 
   const tasks = [
@@ -125,10 +129,7 @@ export function TaskMemberChart({ evidenceGraph }) {
       rows.flatMap((row) =>
         row.tasks.map((task) => [
           String(task.id),
-          {
-            id: task.id,
-            name: task.name,
-          },
+          { id: task.id, name: task.name },
         ])
       )
     ).values(),
@@ -145,7 +146,7 @@ export function TaskMemberChart({ evidenceGraph }) {
             {tasks.map((task) => (
               <th
                 key={task.id}
-                className="py-3 px-2 text-center font-bold text-[#5b6678] min-w-[100px]"
+                className="py-3 px-2 text-center font-bold text-[#5b6678] min-w-[110px]"
               >
                 {task.name}
               </th>
@@ -154,33 +155,47 @@ export function TaskMemberChart({ evidenceGraph }) {
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.member_id} className="border-b border-[#cdd5df]">
+            <tr
+              key={String(row.member_id)}
+              className="border-b border-[#cdd5df]"
+            >
               <td className="py-3 pr-4 font-medium text-[#12203a]">
                 {row.member_name}
               </td>
-
               {tasks.map((task) => {
                 const match = row.tasks.find(
                   (item) => String(item.id) === String(task.id)
                 );
 
                 return (
-                  <td key={task.id} className="py-3 px-2 text-center">
+                  <td
+                    key={String(task.id)}
+                    className="py-3 px-2 text-center"
+                  >
                     {match ? (
                       <span
                         className={[
-                          "inline-flex h-7 min-w-7 items-center justify-center rounded-md px-2 text-[10px] font-bold",
+                          "inline-flex min-h-7 min-w-7 items-center justify-center rounded-md px-2 text-[10px] font-bold",
                           match.alignment === "ALIGNED"
                             ? "bg-[#0a8f6c]/10 text-[#0a8f6c]"
                             : match.alignment === "PARTIAL"
-                              ? "bg-[#f1f3f5] text-[#5b6678]"
-                              : "bg-[#f1f3f5] text-[#8a95a6]",
+                            ? "bg-[#f1f3f5] text-[#5b6678]"
+                            : "bg-[#f1f3f5] text-[#8a95a6]",
                         ].join(" ")}
+                        title={
+                          match.evidence_count !== null &&
+                          match.evidence_count !== undefined
+                            ? `${match.evidence_count} evidence units`
+                            : "Observable evidence relationship"
+                        }
                       >
-                        {match.evidence_count ?? "•"}
+                        {match.evidence_count !== null &&
+                        match.evidence_count !== undefined
+                          ? match.evidence_count
+                          : "•"}
                       </span>
                     ) : (
-                      <span className="text-[#cdd5df]">—</span>
+                      <span className="text-[#cdd5df]">–</span>
                     )}
                   </td>
                 );
@@ -189,6 +204,11 @@ export function TaskMemberChart({ evidenceGraph }) {
           ))}
         </tbody>
       </table>
+      <p className="mt-4 text-[11px] leading-relaxed text-[#8a95a6]">
+        Relationships are displayed only when returned by the evidence graph
+        or task analysis. Automatically discovered work areas use the
+        contributors returned by the backend.
+      </p>
     </div>
   );
 }
@@ -198,84 +218,41 @@ export function EvidenceBreakdownChart({ activity = {} }) {
     ["Commits", activity.commits],
     ["Pull Requests", activity.pull_requests],
     ["Reviews", activity.reviews],
-    ["Comments", activity.comments],
+    ["Review Comments", activity.review_comments],
     ["Issues", activity.issues],
     ["CI Runs", activity.ci_runs],
-  ].filter(([, value]) => value !== null && value !== undefined);
+  ].filter(
+    ([, value]) =>
+      value !== null &&
+      value !== undefined &&
+      Number.isFinite(Number(value))
+  );
 
   if (!metrics.length) {
-    return <EmptyChart message="No activity breakdown was returned by the analysis." />;
+    return (
+      <EmptyChart message="No activity breakdown was returned by the analysis." />
+    );
   }
 
-  const max = Math.max(
-    1,
-    ...metrics.map(([, value]) => Number(value) || 0)
-  );
+  const max = Math.max(1, ...metrics.map(([, value]) => Number(value)));
 
   return (
     <div className="space-y-4">
       {metrics.map(([label, value]) => (
-        <div key={label} className="grid grid-cols-[110px_1fr_45px] items-center gap-3">
+        <div
+          key={label}
+          className="grid grid-cols-[120px_1fr_45px] items-center gap-3"
+        >
           <span className="text-xs font-semibold text-[#5b6678]">
             {label}
           </span>
           <div className="h-2.5 rounded bg-[#f1f3f5] overflow-hidden">
             <div
               className="h-full rounded bg-[#0a8f6c]"
-              style={{
-                width: `${((Number(value) || 0) / max) * 100}%`,
-              }}
+              style={{ width: `${(Number(value) / max) * 100}%` }}
             />
           </div>
           <span className="text-xs font-mono text-right text-[#12203a]">
-            {value}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-export function ActivityTimelineChart({ events = [] }) {
-  if (!events.length) {
-    return <EmptyChart message="No timeline aggregation is available." />;
-  }
-
-  const days = new Map();
-
-  events.forEach((event) => {
-    const value =
-      event.timestamp ||
-      event.created_at ||
-      event.date ||
-      event.time;
-
-    const date = value ? new Date(value) : null;
-    if (!date || Number.isNaN(date.getTime())) return;
-
-    const key = date.toLocaleDateString([], {
-      month: "short",
-      day: "numeric",
-    });
-
-    days.set(key, (days.get(key) || 0) + 1);
-  });
-
-  const values = [...days.entries()];
-  const max = Math.max(1, ...values.map(([, value]) => value));
-
-  return (
-    <div className="space-y-3">
-      {values.slice(-7).map(([day, value]) => (
-        <div key={day} className="grid grid-cols-[55px_1fr_30px] gap-3 items-center">
-          <span className="text-xs text-[#5b6678]">{day}</span>
-          <div className="h-2 rounded bg-[#f1f3f5] overflow-hidden">
-            <div
-              className="h-full bg-[#0a8f6c] rounded"
-              style={{ width: `${(value / max) * 100}%` }}
-            />
-          </div>
-          <span className="text-xs text-[#12203a] text-right">
             {value}
           </span>
         </div>
@@ -331,17 +308,248 @@ export function TimelineChart({ events = [] }) {
   );
 }
 
+export function ContributionScoreChart({ data = [] }) {
+  if (!data.length) {
+    return (
+      <EmptyChart message="No contribution analysis available. Run project analysis first." />
+    );
+  }
+
+  const sorted = [...data].sort(
+    (a, b) =>
+      (Number(b.activity_score_0_100) || 0) -
+      (Number(a.activity_score_0_100) || 0)
+  );
+
+  return (
+    <div className="space-y-4">
+      {sorted.map((member, index) => {
+        const score = Number(member.activity_score_0_100);
+        const valid =
+          member.activity_score_0_100 !== null &&
+          member.activity_score_0_100 !== undefined &&
+          Number.isFinite(score);
+
+        return (
+          <div
+            key={
+              member.member_id ??
+              member.github_username ??
+              `${member.display_name}-${index}`
+            }
+          >
+            <div className="mb-1.5 flex justify-between gap-3 text-xs">
+              <span className="font-semibold text-[#12203a]">
+                {member.display_name || member.github_username || "Member"}
+              </span>
+              <span className="font-mono text-[#5b6678]">
+                {valid ? `${score}/100` : "—"}
+              </span>
+            </div>
+            <div className="h-2.5 overflow-hidden rounded bg-[#f1f3f5]">
+              <div
+                className="h-full rounded bg-[#0a8f6c]"
+                style={{
+                  width: `${
+                    valid ? Math.max(0, Math.min(100, score)) : 0
+                  }%`,
+                }}
+              />
+            </div>
+          </div>
+        );
+      })}
+      <p className="text-[11px] leading-relaxed text-[#8a95a6]">
+        A formula-based activity indicator, not a grade, an ownership
+        percentage, or a measure of understanding.
+      </p>
+    </div>
+  );
+}
+
+export function MemberFileActivityChart({ data = [] }) {
+  const [searchTerm, setSearchTerm] = React.useState("");
+  const [sortBy, setSortBy] = React.useState("total");
+
+  if (!data.length) {
+    return <EmptyChart message="No file-type activity is available." />;
+  }
+
+  const categories = [
+    { label: "Code", key: "files_code" },
+    { label: "Model", key: "files_model" },
+    { label: "Docs", key: "files_docs" },
+    { label: "Config", key: "files_config" },
+    { label: "Data", key: "files_data" },
+    { label: "Other", key: "files_other" },
+  ];
+
+  const getValue = (member, key) => {
+    const value = Number(member.components?.[key] ?? 0);
+    return Number.isFinite(value) ? value : 0;
+  };
+
+  const getName = (member) =>
+    member.display_name || member.github_username || "Member";
+
+  const filteredData = data
+    .filter((member) => {
+      const search = searchTerm.trim().toLowerCase();
+
+      if (!search) return true;
+
+      return (
+        getName(member).toLowerCase().includes(search) ||
+        String(member.github_username || "")
+          .toLowerCase()
+          .includes(search)
+      );
+    })
+    .sort((a, b) => {
+      if (sortBy === "name") {
+        return getName(a).localeCompare(getName(b));
+      }
+
+      const totalA = categories.reduce(
+        (sum, category) => sum + getValue(a, category.key),
+        0
+      );
+
+      const totalB = categories.reduce(
+        (sum, category) => sum + getValue(b, category.key),
+        0
+      );
+
+      return totalB - totalA;
+    });
+
+  return (
+    <div className="space-y-4">
+      {/* Search and sorting */}
+      <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
+        <input
+          type="text"
+          value={searchTerm}
+          onChange={(event) => setSearchTerm(event.target.value)}
+          placeholder="Search member or GitHub username..."
+          className="w-full sm:max-w-sm rounded-md border border-[#cdd5df] px-3 py-2 text-sm text-[#12203a] outline-none focus:border-[#0a8f6c] focus:ring-2 focus:ring-[#0a8f6c]/20"
+          aria-label="Search contributors"
+        />
+
+        <select
+          value={sortBy}
+          onChange={(event) => setSortBy(event.target.value)}
+          className="rounded-md border border-[#cdd5df] px-3 py-2 text-sm text-[#12203a] outline-none focus:border-[#0a8f6c]"
+          aria-label="Sort contributors"
+        >
+          <option value="total">Highest total points</option>
+          <option value="name">Name (A–Z)</option>
+        </select>
+      </div>
+
+      <p className="text-xs text-[#5b6678]">
+        Showing {filteredData.length} of {data.length} contributors
+      </p>
+
+      {/* Compact table */}
+      <div className="overflow-x-auto rounded-lg border border-[#cdd5df]">
+        <table className="w-full min-w-[760px] border-collapse text-sm">
+          <thead className="bg-[#f1f3f5]">
+            <tr className="text-left text-[11px] uppercase tracking-wide text-[#5b6678]">
+              <th className="px-4 py-3 font-semibold">Contributor</th>
+              {categories.map((category) => (
+                <th
+                  key={category.key}
+                  className="px-3 py-3 text-right font-semibold"
+                >
+                  {category.label}
+                </th>
+              ))}
+              <th className="px-4 py-3 text-right font-semibold">
+                Total points
+              </th>
+            </tr>
+          </thead>
+
+          <tbody className="divide-y divide-[#cdd5df]">
+            {filteredData.map((member, index) => {
+              const total = categories.reduce(
+                (sum, category) =>
+                  sum + getValue(member, category.key),
+                0
+              );
+
+              return (
+                <tr
+                  key={
+                    member.member_id ??
+                    member.github_username ??
+                    `${getName(member)}-${index}`
+                  }
+                  className="hover:bg-[#f8fafb]"
+                >
+                  <td className="px-4 py-3">
+                    <div className="font-semibold text-[#12203a]">
+                      {getName(member)}
+                    </div>
+                    {member.github_username && (
+                      <div className="mt-0.5 text-xs text-[#8a95a6]">
+                        @{member.github_username}
+                      </div>
+                    )}
+                  </td>
+
+                  {categories.map((category) => (
+                    <td
+                      key={category.key}
+                      className="px-3 py-3 text-right font-mono text-xs text-[#12203a]"
+                    >
+                      {getValue(member, category.key).toFixed(1)}
+                    </td>
+                  ))}
+
+                  <td className="px-4 py-3 text-right font-mono text-xs font-semibold text-[#0a8f6c]">
+                    {total.toFixed(1)}
+                  </td>
+                </tr>
+              );
+            })}
+
+            {filteredData.length === 0 && (
+              <tr>
+                <td
+                  colSpan={categories.length + 2}
+                  className="px-4 py-8 text-center text-sm text-[#8a95a6]"
+                >
+                  No contributors match your search.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="text-[11px] leading-relaxed text-[#8a95a6]">
+        Values are weighted component points calculated by the backend,
+        not raw file counts. Total points are the sum of the six displayed
+        components and should not be interpreted as a grade or ownership.
+      </p>
+    </div>
+  );
+}
+
 function normalizeGraph(graph) {
   if (!graph) return [];
 
   const raw =
     graph.members ||
-    graph.nodes ||
     graph.member_task_relationships ||
     graph.items ||
     [];
 
-  if (!Array.isArray(raw)) return [];
+  if (!Array.isArray(raw)) {
+    return normalizeGraphNodesAndEdges(graph);
+  }
 
   return raw
     .map((row) => ({
@@ -353,22 +561,189 @@ function normalizeGraph(graph) {
         row.name ||
         "Member",
       tasks: Array.isArray(row.tasks)
-        ? row.tasks.map((task) => ({
-            id: task.task_id ?? task.id,
-            name:
-              task.task_name ||
-              task.name ||
-              task.task ||
-              "Task",
-            alignment: task.alignment,
-            evidence_count:
-              task.evidence_count ??
-              task.events_count ??
-              task.count,
-          }))
+        ? row.tasks
+            .map((task) => ({
+              id:
+                task.task_id ??
+                task.id ??
+                task.task_name ??
+                task.name,
+              name:
+                task.task_name ||
+                task.name ||
+                task.task ||
+                "Task",
+              alignment: task.alignment,
+              evidence_count:
+                task.evidence_count ??
+                task.events_count ??
+                task.evidence_units ??
+                task.count ??
+                null,
+            }))
+            .filter(
+              (task) => task.id !== null && task.id !== undefined
+            )
         : [],
     }))
     .filter((row) => row.tasks.length);
+}
+
+function normalizeGraphNodesAndEdges(graph) {
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  const edges = Array.isArray(graph.edges) ? graph.edges : [];
+
+  if (!nodes.length || !edges.length) return [];
+
+  const members = nodes.filter((node) => {
+    const type = String(
+      node.type || node.node_type || node.kind || ""
+    ).toLowerCase();
+    return type.includes("member") || node.member_id !== undefined;
+  });
+
+  const tasks = nodes.filter((node) => {
+    const type = String(
+      node.type || node.node_type || node.kind || ""
+    ).toLowerCase();
+    return (
+      type.includes("task") ||
+      type.includes("work") ||
+      node.task_id !== undefined
+    );
+  });
+
+  if (!members.length || !tasks.length) return [];
+
+  const taskByNodeId = new Map(
+    tasks.map((task) => [String(task.id ?? task.node_id), task])
+  );
+
+  return members
+    .map((member) => {
+      const memberNodeId = String(member.id ?? member.node_id);
+
+      const memberTasks = edges
+        .filter((edge) => {
+          const source = String(edge.source ?? edge.from);
+          const target = String(edge.target ?? edge.to);
+          return source === memberNodeId || target === memberNodeId;
+        })
+        .map((edge) => {
+          const source = String(edge.source ?? edge.from);
+          const target = String(edge.target ?? edge.to);
+          const taskNodeId =
+            source === memberNodeId ? target : source;
+          return taskByNodeId.get(taskNodeId);
+        })
+        .filter(Boolean)
+        .map((task) => ({
+          id: task.task_id ?? task.id ?? task.node_id,
+          name: task.task_name || task.name || "Task",
+          alignment: null,
+          evidence_count: null,
+        }));
+
+      return {
+        member_id: member.member_id ?? member.id ?? member.node_id,
+        member_name:
+          member.member_name ||
+          member.display_name ||
+          member.github_username ||
+          member.name ||
+          "Member",
+        tasks: memberTasks,
+      };
+    })
+    .filter((row) => row.tasks.length);
+}
+
+function normalizeTaskAnalysis(taskAnalysis) {
+  if (!Array.isArray(taskAnalysis)) return [];
+
+  const rows = new Map();
+
+  taskAnalysis.forEach((task, taskIndex) => {
+    if (!task || !Array.isArray(task.contributors)) return;
+
+    const taskId =
+      task.task_id ?? task.id ?? `task-analysis-${taskIndex}`;
+    const taskName =
+      task.name ||
+      task.task_name ||
+      task.title ||
+      `Work area ${taskIndex + 1}`;
+
+    task.contributors.forEach((contributor, contributorIndex) => {
+      const normalized = normalizeContributor(contributor);
+      if (!normalized) return;
+
+      const memberKey =
+        normalized.member_id ??
+        normalized.github_username ??
+        normalized.member_name ??
+        `member-${contributorIndex}`;
+
+      if (!rows.has(String(memberKey))) {
+        rows.set(String(memberKey), {
+          member_id: normalized.member_id ?? memberKey,
+          member_name:
+            normalized.member_name ||
+            normalized.github_username ||
+            "Member",
+          tasks: [],
+        });
+      }
+
+      rows.get(String(memberKey)).tasks.push({
+        id: taskId,
+        name: taskName,
+        alignment:
+          normalized.alignment ??
+          normalized.evidence_status ??
+          null,
+        evidence_count:
+          normalized.evidence_count ??
+          normalized.evidence_units ??
+          null,
+      });
+    });
+  });
+
+  return [...rows.values()].filter((row) => row.tasks.length);
+}
+
+function normalizeContributor(contributor) {
+  if (typeof contributor === "string") {
+    return { member_name: contributor };
+  }
+
+  if (typeof contributor !== "object" || contributor === null) {
+    return null;
+  }
+
+  return {
+    member_id: contributor.member_id ?? contributor.id ?? null,
+    member_name:
+      contributor.member_name ??
+      contributor.display_name ??
+      contributor.name ??
+      contributor.member ??
+      null,
+    github_username:
+      contributor.github_username ??
+      contributor.username ??
+      contributor.login ??
+      null,
+    alignment: contributor.alignment ?? null,
+    evidence_count:
+      contributor.evidence_count ??
+      contributor.events_count ??
+      contributor.count ??
+      null,
+    evidence_units: contributor.evidence_units ?? null,
+    evidence_status: contributor.evidence_status ?? null,
+  };
 }
 
 function formatEventType(event) {
@@ -380,8 +755,10 @@ function formatEventType(event) {
 
 function formatDate(value) {
   if (!value) return "Unknown time";
+
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Unknown time";
+
   return date.toLocaleString([], {
     month: "short",
     day: "numeric",

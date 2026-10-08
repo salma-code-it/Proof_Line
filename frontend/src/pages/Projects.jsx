@@ -1,16 +1,19 @@
-import React, { useEffect, useMemo, useState } from "react";
+
+import React, { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
 import {
   getDashboardData,
   createProject,
   analyzeProject,
+  getContributionAnalysis,
 } from "../api";
 import {
-  EvidenceUnderstandingChart,
   TaskMemberChart,
   EvidenceBreakdownChart,
   TimelineChart,
+  ContributionScoreChart,
+  MemberFileActivityChart,
 } from "../components/Charts";
 import {
   ArrowLeft,
@@ -20,7 +23,6 @@ import {
   CheckSquare,
   Activity,
   GitCommit,
-  GitPullRequest,
   AlertCircle,
 } from "lucide-react";
 
@@ -29,6 +31,8 @@ export default function Projects() {
   const navigate = useNavigate();
 
   const [data, setData] = useState(null);
+  const [contributionAnalysis, setContributionAnalysis] = useState(null);
+  const [contributionError, setContributionError] = useState("");
   const [loading, setLoading] = useState(Boolean(projectId));
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState("");
@@ -37,16 +41,37 @@ export default function Projects() {
   const [urlInput, setUrlInput] = useState("");
 
   const isCreatePage = !projectId;
-
   async function loadDashboard() {
     if (!projectId) return;
 
     setLoading(true);
     setError("");
+    setContributionError("");
 
     try {
-      const result = await getDashboardData(projectId);
-      setData(result);
+      const [dashboardResult, contributionResult] =
+        await Promise.allSettled([
+          getDashboardData(projectId),
+          getContributionAnalysis(projectId),
+        ]);
+
+      // Dashboard data is required for the page.
+      if (dashboardResult.status === "rejected") {
+        throw dashboardResult.reason;
+      }
+
+      setData(dashboardResult.value);
+
+      // Contribution data is optional for the rest of the dashboard.
+      if (contributionResult.status === "fulfilled") {
+        setContributionAnalysis(contributionResult.value);
+      } else {
+        setContributionAnalysis(null);
+        setContributionError(
+          contributionResult.reason?.message ||
+            "Could not load contribution analysis."
+        );
+      }
     } catch (err) {
       setError(err.message || "Failed to load project.");
     } finally {
@@ -58,6 +83,8 @@ export default function Projects() {
     loadDashboard();
   }, [projectId]);
 
+    
+  // Create a project
   async function handleCreate(event) {
     event.preventDefault();
 
@@ -93,6 +120,8 @@ export default function Projects() {
     }
   }
 
+    
+  // Analyze the project again 
   async function handleAnalyze() {
     if (!projectId) return;
 
@@ -109,6 +138,8 @@ export default function Projects() {
     }
   }
 
+    
+  // Create project page
   if (isCreatePage) {
     return (
       <div className="flex min-h-screen bg-[#f1f3f5]">
@@ -123,9 +154,11 @@ export default function Projects() {
               <p className="text-xs font-bold uppercase tracking-wider text-[#0a8f6c]">
                 New project
               </p>
+
               <h1 className="mt-2 text-2xl font-bold text-[#12203a]">
                 Analyze a GitHub project
               </h1>
+
               <p className="mt-2 text-sm leading-relaxed text-[#5b6678]">
                 Save the repository, collect deterministic GitHub evidence,
                 and build the project evidence trail.
@@ -165,11 +198,12 @@ export default function Projects() {
       </div>
     );
   }
-
+  // Loading page
   if (loading && !data) {
     return (
       <div className="flex min-h-screen bg-[#f1f3f5]">
         <Sidebar projectId={projectId} />
+
         <main className="flex-1 flex items-center justify-center text-sm text-[#5b6678]">
           Loading project evidence...
         </main>
@@ -177,10 +211,13 @@ export default function Projects() {
     );
   }
 
+    
+  // Project not found or unavailable 
   if (!data?.project) {
     return (
       <div className="flex min-h-screen bg-[#f1f3f5]">
         <Sidebar projectId={projectId} />
+
         <main className="flex-1 p-8">
           <ErrorBox
             message={error || "Project data is unavailable."}
@@ -190,40 +227,103 @@ export default function Projects() {
     );
   }
 
-  const { project, analysis, timeline, evidenceGraph } = data;
-  const members = project.github_contributors || [];
+  const {
+    project,
+    analysis,
+    timeline,
+    evidenceGraph,
+  } = data;
+
+  const members = Array.isArray(project.github_contributors)
+    ? project.github_contributors
+    : [];
+
   const events = normalizeEvents(timeline);
 
   const memberAnalysis = Array.isArray(analysis?.member_analysis)
     ? analysis.member_analysis
     : [];
+  const contributionMembers = Array.isArray(
+    contributionAnalysis?.members
+  )
+    ? contributionAnalysis.members
+    : [];
+  const configuredTasks = Array.isArray(project.tasks)
+    ? project.tasks
+    : [];
 
-  const scatterData = members.map((member) => {
-    const result = memberAnalysis.find(
-      (item) =>
-        Number(item.member_id) === Number(member.id)
-    );
+  const taskAnalysisRaw = Array.isArray(analysis?.task_analysis)
+    ? analysis.task_analysis
+    : [];
+
+  const taskCount =
+    configuredTasks.length > 0
+      ? configuredTasks.length
+      : taskAnalysisRaw.length;
+  const taskAnalysis = taskAnalysisRaw.map((task, index) => {
+    const taskId = task.task_id ?? task.id ?? `work-area-${index}`;
+
+    const taskName =
+      task.name || task.task_name || `Work area ${index + 1}`;
+
+    const evidenceUnits = getNumericValue(task.evidence_units);
+
+    const contributors = Array.isArray(task.contributors)
+      ? task.contributors.map((c) => {
+          if (typeof c === "string") {
+            return {
+              member_name: c,
+              evidence_units: evidenceUnits,
+            };
+          }
+
+          return {
+            ...c,
+            evidence_units:
+              getNumericValue(c.evidence_units) ??
+              getNumericValue(c.evidence_count) ??
+              evidenceUnits,
+          };
+        })
+      : [];
 
     return {
-      id: member.id,
-      name:
-        member.display_name ||
-        member.github_username ||
-        "Member",
-      evidence:
-        getMemberEvidenceCount(result),
-      understanding:
-        result?.understanding_score ??
-        result?.understanding ??
-        null,
+      ...task,
+      task_id: taskId,
+      id: taskId,
+      name: taskName,
+      contributors,
     };
   });
 
-  const activity = getCollectionActivity(analysis);
+  const scatterData = members
+    .map((member) => {
+      const result = findMemberAnalysis(member, memberAnalysis);
+      const evidenceCount = getMemberEvidenceCount(result);
+
+      return {
+        id: member.id ?? result?.member_id ?? null,
+        name:
+          member.display_name ||
+          member.github_username ||
+          result?.display_name ||
+          result?.github_username ||
+          "Member",
+        evidence: evidenceCount !== null ? evidenceCount : 0,
+        understanding:
+          getNumericValue(result?.understanding_score) ??
+          getNumericValue(result?.understanding) ??
+          null,
+      };
+    })
+    .filter((item) => item.evidence !== null);
+
+  const activity = getCollectionActivity(analysis, memberAnalysis);
+
   const evidenceEvents =
     activity.events_stored ??
     activity.evidence_events ??
-    analysis?.evidence_events ??
+    getNumericValue(analysis?.total_events) ??
     null;
 
   return (
@@ -245,8 +345,11 @@ export default function Projects() {
                 <h1 className="text-lg font-bold text-[#12203a] truncate">
                   {project.name}
                 </h1>
+
                 <p className="text-xs text-[#5b6678] font-mono truncate">
-                  {project.repo_url || project.repo || "GitHub repository"}
+                  {project.repo_url ||
+                    project.repo ||
+                    "GitHub repository"}
                 </p>
               </div>
             </div>
@@ -273,6 +376,7 @@ export default function Projects() {
                   size={15}
                   className={analyzing ? "animate-spin" : ""}
                 />
+
                 {analyzing ? "Analyzing..." : "Analyze Project"}
               </button>
             </div>
@@ -282,14 +386,17 @@ export default function Projects() {
         <main className="max-w-7xl mx-auto px-5 sm:px-8 py-8 space-y-8">
           {error && <ErrorBox message={error} />}
 
+          {/* Project Overview */}
           <section>
             <div className="mb-5">
               <p className="text-xs font-bold uppercase tracking-wider text-[#0a8f6c]">
                 Project overview
               </p>
+
               <h2 className="mt-1 text-2xl font-bold text-[#12203a]">
                 Observable evidence
               </h2>
+
               <p className="mt-1 text-sm text-[#5b6678]">
                 Deterministic repository activity collected for this project.
               </p>
@@ -308,7 +415,7 @@ export default function Projects() {
               <MetricCard
                 icon={<CheckSquare size={17} />}
                 label="Tasks"
-                value={project.tasks?.length ?? 0}
+                value={taskCount}
                 onClick={() =>
                   navigate(
                     `/project/${projectId}/understanding/tasks`
@@ -330,35 +437,25 @@ export default function Projects() {
             </div>
           </section>
 
-          <section className="bg-white rounded-xl border border-[#cdd5df] p-6">
-            <div className="mb-5">
-              <h2 className="text-lg font-bold text-[#12203a]">
-                Evidence vs Understanding
-              </h2>
-              <p className="mt-1 text-sm text-[#5b6678]">
-                GitHub activity is observable evidence. Understanding is
-                shown only after a member completes a proof check.
-              </p>
-            </div>
-
-            <EvidenceUnderstandingChart
-              data={scatterData}
-              projectId={projectId}
-            />
-          </section>
-
+          {/* Task Matrix and Repository Activity */}
           <div className="grid xl:grid-cols-2 gap-6">
             <section className="bg-white rounded-xl border border-[#cdd5df] p-6">
               <div className="mb-5">
                 <h2 className="text-lg font-bold text-[#12203a]">
                   Task × Member Evidence
                 </h2>
+
                 <p className="mt-1 text-sm text-[#5b6678]">
-                  Relationships returned by the evidence graph.
+                  Relationships returned by the evidence analysis. Automatic
+                  work areas use the contributors already returned by the
+                  backend.
                 </p>
               </div>
 
-              <TaskMemberChart evidenceGraph={evidenceGraph} />
+              <TaskMemberChart
+                evidenceGraph={evidenceGraph}
+                taskAnalysis={taskAnalysis}
+              />
             </section>
 
             <section className="bg-white rounded-xl border border-[#cdd5df] p-6">
@@ -366,8 +463,9 @@ export default function Projects() {
                 <h2 className="text-lg font-bold text-[#12203a]">
                   Repository Activity
                 </h2>
+
                 <p className="mt-1 text-sm text-[#5b6678]">
-                  Only metrics actually returned by the analysis are shown.
+                  Project-level metrics actually returned by the analysis.
                 </p>
               </div>
 
@@ -375,12 +473,71 @@ export default function Projects() {
             </section>
           </div>
 
+          {/* Member Contribution Evidence */}
+          <section className="space-y-6">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wider text-[#0a8f6c]">
+                Member analysis
+              </p>
+
+              <h2 className="mt-1 text-2xl font-bold text-[#12203a]">
+                Member Contribution Evidence
+              </h2>
+
+              <p className="mt-1 text-sm leading-relaxed text-[#5b6678]">
+                Compare observable GitHub activity, activity indicators, and
+                file-type evidence for each member. These metrics describe
+                recorded activity; they do not establish intellectual
+                ownership or prove understanding.
+              </p>
+            </div>
+
+            {contributionError && (
+              <ErrorBox message={contributionError} />
+            )}
+
+            {/* Chart 1: Contribution Activity Score */}
+            <div className="bg-white rounded-xl border border-[#cdd5df] p-6">
+              <div className="mb-5">
+                <h2 className="text-lg font-bold text-[#12203a]">
+                  Activity Indicator
+                </h2>
+
+                <p className="mt-1 text-sm text-[#5b6678]">
+                  The formula-based, capped activity score returned by
+                  contribution.py.
+                </p>
+              </div>
+
+              <ContributionScoreChart data={contributionMembers} />
+            </div>
+
+            {/* Chart 3: File-Type Activity */}
+            <div className="bg-white rounded-xl border border-[#cdd5df] p-6">
+              <div className="mb-5">
+                <h2 className="text-lg font-bold text-[#12203a]">
+                  File-Type Activity by Member
+                </h2>
+
+                <p className="mt-1 text-sm text-[#5b6678]">
+                  Compare the file-type component values returned by the
+                  backend, including code, model, documentation, configuration,
+                  and data files.
+                </p>
+              </div>
+
+              <MemberFileActivityChart data={contributionMembers} />
+            </div>
+          </section>
+
+          {/* Recent Activity */}
           <section className="bg-white rounded-xl border border-[#cdd5df] p-6">
             <div className="flex items-center justify-between gap-4 mb-5">
               <div>
                 <h2 className="text-lg font-bold text-[#12203a]">
                   Recent Activity
                 </h2>
+
                 <p className="mt-1 text-sm text-[#5b6678]">
                   Chronological GitHub evidence.
                 </p>
@@ -399,12 +556,14 @@ export default function Projects() {
             <TimelineChart events={events} />
           </section>
 
+          {/* Members */}
           <section className="bg-white rounded-xl border border-[#cdd5df] p-6">
             <div className="flex items-center justify-between mb-5">
               <div>
                 <h2 className="text-lg font-bold text-[#12203a]">
                   Members
                 </h2>
+
                 <p className="mt-1 text-sm text-[#5b6678]">
                   Observable evidence per project member.
                 </p>
@@ -427,15 +586,18 @@ export default function Projects() {
                 </p>
               ) : (
                 members.map((member) => {
-                  const result = memberAnalysis.find(
-                    (item) =>
-                      Number(item.member_id) === Number(member.id)
+                  const result = findMemberAnalysis(
+                    member,
+                    memberAnalysis
                   );
+
+                  const evidence = getMemberEvidenceCount(result);
 
                   return (
                     <button
-                      key={member.id}
+                      key={member.id ?? member.github_username}
                       onClick={() =>
+                        member.id &&
                         navigate(
                           `/project/${projectId}/member/${member.id}`
                         )
@@ -447,12 +609,16 @@ export default function Projects() {
                           {member.display_name ||
                             member.github_username}
                         </p>
+
                         <p className="text-xs text-[#5b6678]">
                           @{member.github_username}
                         </p>
                       </div>
+
                       <span className="text-sm font-semibold text-[#5b6678]">
-                        {getMemberEvidenceCount(result) ?? "—"} evidence
+                        {evidence !== null
+                          ? `${evidence} evidence`
+                          : "—"}
                       </span>
                     </button>
                   );
@@ -478,6 +644,7 @@ function Field({
       <span className="block text-sm font-semibold text-[#12203a] mb-2">
         {label}
       </span>
+
       <input
         type={type}
         value={value}
@@ -489,16 +656,22 @@ function Field({
   );
 }
 
+// Metric Card
 function MetricCard({ icon, label, value, onClick }) {
   const content = (
     <>
       <div className="flex items-center justify-between">
         <span className="text-[#0a8f6c]">{icon}</span>
-        {onClick && <span className="text-xs text-[#8a95a6]">View →</span>}
+
+        {onClick && (
+          <span className="text-xs text-[#8a95a6]">View →</span>
+        )}
       </div>
+
       <p className="mt-5 text-3xl font-bold text-[#12203a]">
-        {value ?? "—"}
+        {value !== null && value !== undefined ? value : "—"}
       </p>
+
       <p className="mt-1 text-sm text-[#5b6678]">{label}</p>
     </>
   );
@@ -538,70 +711,128 @@ function normalizeEvents(data) {
   return [];
 }
 
-function getCollectionActivity(analysis) {
+// Repository Activity
+function getCollectionActivity(analysis, memberAnalysis = []) {
   const collection = analysis?.collection || {};
+
+  const totalReviews = memberAnalysis.reduce((sum, member) => {
+    const count =
+      member.event_counts?.REVIEW ??
+      member.activity?.reviews ??
+      0;
+
+    return sum + Number(count || 0);
+  }, 0);
+
+  const totalReviewComments = memberAnalysis.reduce(
+    (sum, member) => {
+      const count =
+        member.event_counts?.REVIEW_COMMENT ??
+        member.activity?.review_comments ??
+        member.activity?.comments ??
+        0;
+
+      return sum + Number(count || 0);
+    },
+    0
+  );
 
   return {
     commits:
-      collection.commits_collected ??
-      collection.commits ??
-      null,
+      getNumericValue(collection.commits_collected) ??
+      getNumericValue(collection.commits),
+
     pull_requests:
-      collection.pull_requests_analyzed ??
-      collection.pull_requests ??
-      null,
+      getNumericValue(collection.pull_requests_analyzed) ??
+      getNumericValue(collection.pull_requests),
+
     reviews:
-      collection.reviews_collected ??
-      collection.reviews ??
-      null,
-    comments:
-      collection.comments_collected ??
-      collection.comments ??
-      null,
+      getNumericValue(collection.reviews_collected) ??
+      getNumericValue(collection.reviews) ??
+      (totalReviews > 0 ? totalReviews : null),
+
+    review_comments:
+      getNumericValue(collection.review_comments_collected) ??
+      getNumericValue(collection.review_comments) ??
+      (totalReviewComments > 0 ? totalReviewComments : null),
+
     issues:
-      collection.issues_collected ??
-      collection.issues ??
-      null,
+      getNumericValue(collection.issues_collected) ??
+      getNumericValue(collection.issues),
+
     ci_runs:
-      collection.workflow_runs_collected ??
-      collection.ci_runs ??
-      null,
+      getNumericValue(collection.workflow_runs_collected) ??
+      getNumericValue(collection.ci_runs),
+
     events_stored:
-      collection.events_stored ??
-      collection.total_events ??
-      null,
-    evidence_events:
-      collection.evidence_events ?? null,
+      getNumericValue(collection.events_stored) ??
+      getNumericValue(collection.total_events),
+
+    evidence_events: getNumericValue(collection.evidence_events),
   };
 }
 
+// Member Evidence Count
 function getMemberEvidenceCount(memberAnalysis) {
-  if (!memberAnalysis) return 0;
+  if (!memberAnalysis) return null;
 
-  if (memberAnalysis.evidence_events !== undefined) {
-    return memberAnalysis.evidence_events;
-  }
+  const directValues = [
+    memberAnalysis.total_events,
+    memberAnalysis.evidence_events,
+    memberAnalysis.evidence_units,
+    memberAnalysis.observable_evidence,
+  ];
 
-  if (memberAnalysis.activity?.evidence_events !== undefined) {
-    return memberAnalysis.activity.evidence_events;
+  for (const value of directValues) {
+    const numeric = getNumericValue(value);
+    if (numeric !== null) return numeric;
   }
 
   const activity = memberAnalysis.activity || {};
+  const totals = memberAnalysis.totals || {};
 
-  const keys = [
-    "commits",
-    "pull_requests",
-    "reviews",
-    "comments",
-    "issues",
-    "ci_runs",
+  const nestedValues = [
+    activity.evidence_events,
+    activity.evidence_units,
+    activity.observable_evidence,
+    totals.changed_files_count,
   ];
 
-  const values = keys
-    .map((key) => activity[key])
-    .filter((value) => value !== undefined && value !== null)
-    .map(Number)
-    .filter(Number.isFinite);
+  for (const value of nestedValues) {
+    const numeric = getNumericValue(value);
+    if (numeric !== null) return numeric;
+  }
 
-  return values.length ? values.reduce((sum, value) => sum + value, 0) : 0;
+  return null;
+}
+
+// Find Matching Member Analysis
+function findMemberAnalysis(member, memberAnalysis) {
+  if (!Array.isArray(memberAnalysis)) return null;
+
+  return (
+    memberAnalysis.find(
+      (item) =>
+        member.id !== undefined &&
+        item.member_id !== undefined &&
+        Number(item.member_id) === Number(member.id)
+    ) ||
+    memberAnalysis.find(
+      (item) =>
+        member.github_username &&
+        item.github_username &&
+        String(item.github_username).toLowerCase() ===
+          String(member.github_username).toLowerCase()
+    ) ||
+    null
+  );
+}
+// Numeric Value Helper
+function getNumericValue(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
 }

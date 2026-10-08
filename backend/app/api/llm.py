@@ -1,29 +1,42 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
 from pathlib import Path
-import json
-import logging
 from typing import Any
 
+import json
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
 from app.database import get_db
-from app.models import (AnalysisResult,Member,Project,Task,UnderstandingSession,utc_now)
-from app.services.llm import (LLMAPIError,LLMService)
+from app.models import (
+    AnalysisResult,
+    Member,
+    Project,
+    Task,
+    UnderstandingSession,
+    utc_now,
+)
+from app.services.llm import LLMAPIError, LLMService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/llm",tags=["LLM"])
+router = APIRouter(prefix="/llm", tags=["LLM"])
 
 ANALYSIS_DIR = Path("llm_analysis")
 ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
 
 
- 
-# HELPERS
+class UnderstandingAnswers(BaseModel):
+    answers: dict[str, str]
+
+
+
 def _get_project_or_404(db: Session, project_id: int) -> Project:
     project = db.query(Project).filter(Project.id == project_id).first()
-    if not project:
+    if project is None:
         raise HTTPException(status_code=404, detail="Project not found.")
     return project
 
@@ -37,14 +50,24 @@ def _latest_analysis(db: Session, project_id: int) -> AnalysisResult | None:
     )
 
 
+def _get_analysis_or_404(db: Session, project_id: int) -> AnalysisResult:
+    record = _latest_analysis(db, project_id)
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "This project has not been analyzed yet. "
+                "Run POST /projects/{project_id}/analyze first."
+            ),
+        )
+    return record
+
+
 def _patterns(value: Any) -> list[str]:
     if isinstance(value, str):
         try:
             decoded = json.loads(value)
-            if isinstance(decoded, list):
-                value = decoded
-            else:
-                value = value.split(",")
+            value = decoded if isinstance(decoded, list) else value.split(",")
         except (TypeError, json.JSONDecodeError):
             value = value.split(",")
     if not isinstance(value, list):
@@ -87,35 +110,30 @@ def _write_analysis_file(path: Path, analysis: dict[str, Any]) -> None:
         logger.warning("Could not write LLM analysis file %s: %s", path, error)
 
 
-def _get_analysis_or_404(db: Session, project_id: int) -> AnalysisResult:
-    record = _latest_analysis(db, project_id)
-    if record is None:
+def _save_analysis(
+    db: Session,
+    record: AnalysisResult,
+    analysis: dict[str, Any],
+) -> None:
+    cleaned = json.loads(json.dumps(analysis, ensure_ascii=False, default=str))
+    record.analysis_json = cleaned
+    try:
+        db.commit()
+        db.refresh(record)
+    except Exception as error:
+        db.rollback()
         raise HTTPException(
-            status_code=404,
-            detail="This project has not been analyzed yet. Run POST /projects/{project_id}/analyze first.",
-        )
-    return record
+            status_code=500,
+            detail=f"Failed to save LLM analysis: {error}",
+        ) from error
+    _write_analysis_file(
+        _analysis_file_path(record.project_id, record.id),
+        cleaned,
+    )
 
 
-def _repository_context(analysis: dict[str, Any]) -> dict[str, Any]:
-    repository = analysis.get("repository") or {}
-    collection = analysis.get("collection") or {}
-    return {
-        "owner": repository.get("owner"),
-        "repo": repository.get("repo"),
-        "name": repository.get("name"),
-        "description": repository.get("description"),
-        "language": repository.get("language"),
-        "default_branch": repository.get("default_branch"),
-        "url": repository.get("url"),
-        "known_files": collection.get("known_files", []),
-        "commits_collected": collection.get("commits_collected", 0),
-        "pull_requests_collected": collection.get("pull_requests_collected", 0),
-        "issues_collected": collection.get("issues_collected", 0),
-        "workflow_runs_collected": collection.get("workflow_runs_collected", 0),
-    }
-
-
+ 
+# Evidence extraction from stored analysis JSON
 def _known_files(analysis: dict[str, Any]) -> list[str]:
     collection = analysis.get("collection") or {}
     files = collection.get("known_files", [])
@@ -125,383 +143,704 @@ def _known_files(analysis: dict[str, Any]) -> list[str]:
     for file in files:
         if not isinstance(file, str):
             continue
-        file = file.strip().replace("\\", "/")
-        if file and file not in result:
-            result.append(file)
+        normalized = file.strip().replace("\\", "/")
+        if normalized and normalized not in result:
+            result.append(normalized)
     return sorted(result)
 
 
-def _save_analysis(db: Session, record: AnalysisResult, analysis: dict[str, Any]) -> None:
-    analysis = json.loads(json.dumps(analysis, default=str))
-    record.analysis_json = analysis
+def _member_name(member: dict[str, Any]) -> str:
+    return (
+        member.get("display_name")
+        or member.get("github_username")
+        or member.get("member")
+        or "Unknown"
+    )
+
+
+def _extract_commit_evidence(analysis: dict[str, Any]) -> list[dict[str, Any]]:
+    """Pull commits from member_analysis.details (where the pipeline stores them)."""
+    member_analysis = analysis.get("member_analysis", [])
+    if not isinstance(member_analysis, list):
+        return []
+
+    commits: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for member in member_analysis:
+        if not isinstance(member, dict):
+            continue
+        member_id = member.get("member_id")
+        name = _member_name(member)
+        details = member.get("details") or {}
+        for commit in details.get("commits") or []:
+            if not isinstance(commit, dict):
+                continue
+            sha = str(commit.get("sha") or "").strip()
+            key = sha or json.dumps(commit, sort_keys=True, default=str)
+            if key in seen:
+                continue
+            seen.add(key)
+            files = commit.get("files") or []
+            normalized_files = [
+                str(f).replace("\\", "/")
+                for f in files
+                if isinstance(f, str)
+            ]
+            commits.append(
+                {
+                    "sha": sha,
+                    "message": commit.get("message") or "",
+                    "branch_name": commit.get("branch_name") or commit.get("branch"),
+                    "date": commit.get("date"),
+                    "url": commit.get("url"),
+                    "files": normalized_files,
+                    "changed_file_count": commit.get("changed_file_count")
+                    or len(normalized_files),
+                    "additions": commit.get("additions"),
+                    "deletions": commit.get("deletions"),
+                    "file_kinds": commit.get("file_kinds"),
+                    "member_id": member_id,
+                    "member": name,
+                }
+            )
+    return commits
+
+
+def _extract_pull_request_evidence(
+    analysis: dict[str, Any],
+) -> list[dict[str, Any]]:
+    member_analysis = analysis.get("member_analysis", [])
+    if not isinstance(member_analysis, list):
+        return []
+
+    pull_requests: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for member in member_analysis:
+        if not isinstance(member, dict):
+            continue
+        member_id = member.get("member_id")
+        name = _member_name(member)
+        details = member.get("details") or {}
+        for pr in details.get("pull_requests") or []:
+            if not isinstance(pr, dict):
+                continue
+            number = pr.get("number")
+            key = (
+                f"pr-{number}"
+                if number is not None
+                else json.dumps(pr, sort_keys=True, default=str)
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            files = pr.get("files") or []
+            normalized_files: list[str] = []
+            for file in files:
+                if isinstance(file, str):
+                    normalized_files.append(file.replace("\\", "/"))
+                elif isinstance(file, dict):
+                    fn = file.get("filename") or file.get("path")
+                    if isinstance(fn, str):
+                        normalized_files.append(fn.replace("\\", "/"))
+            pull_requests.append(
+                {
+                    "number": number,
+                    "title": pr.get("title") or "",
+                    "body": pr.get("body") or "",
+                    "state": pr.get("state"),
+                    "merged": bool(pr.get("merged")),
+                    "files": normalized_files,
+                    "changed_file_count": pr.get("changed_file_count")
+                    or len(normalized_files),
+                    "additions": pr.get("additions"),
+                    "deletions": pr.get("deletions"),
+                    "branch": pr.get("branch") or pr.get("head_ref"),
+                    "member_id": member_id,
+                    "member": name,
+                }
+            )
+    return pull_requests
+
+
+def _expand_to_known_files(
+    patterns: list[str],
+    known_files: list[str],
+    max_files: int = 12,
+) -> list[str]:
+    import fnmatch
+
+    known_set = set(known_files)
+    exact: list[str] = []
+    for pattern in patterns:
+        path = str(pattern).strip().replace("\\", "/")
+        if not path:
+            continue
+        if path in known_set and path not in exact:
+            exact.append(path)
+
+    if exact:
+        return exact[:max_files]
+
+    expanded: list[str] = []
+    for pattern in patterns:
+        pat = str(pattern).strip().replace("\\", "/")
+        if not pat:
+            continue
+        for path in known_files:
+            if path in expanded:
+                continue
+            if fnmatch.fnmatch(path, pat):
+                expanded.append(path)
+            elif pat.endswith("/*") and path.startswith(pat[:-1]):
+                expanded.append(path)
+            elif pat.endswith("/") and path.startswith(pat):
+                expanded.append(path)
+            if len(expanded) >= max_files:
+                break
+        if len(expanded) >= max_files:
+            break
+    return expanded[:max_files]
+
+
+def _build_llm_context(
+    project: Project,
+    analysis: dict[str, Any],
+) -> tuple[dict[str, Any], list[str], list[dict[str, Any]], list[dict[str, Any]]]:
+    repository = analysis.get("repository") or {}
+    files = _known_files(analysis)
+    commits = _extract_commit_evidence(analysis)
+    pull_requests = _extract_pull_request_evidence(analysis)
+
+    member_names: list[str] = []
+    for member in analysis.get("member_analysis") or []:
+        if not isinstance(member, dict):
+            continue
+        name = _member_name(member)
+        if name and name not in member_names:
+            member_names.append(name)
+
+    commit_messages = [
+        str(c.get("message"))
+        for c in commits
+        if c.get("message")
+    ]
+    pr_titles = [
+        str(pr.get("title"))
+        for pr in pull_requests
+        if pr.get("title")
+    ]
+
+    # Prefer the enriched signature if the service supports it.
     try:
-        db.commit()
-        db.refresh(record)
-    except Exception as error:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to save LLM analysis: {error}") from error
-    path = _analysis_file_path(record.project_id, record.id)
-    _write_analysis_file(path, analysis)
+        context = LLMService.build_repo_context(
+            repository={
+                "full_name": repository.get("full_name")
+                or repository.get("name"),
+                "description": repository.get("description"),
+                "language": repository.get("language"),
+                "owner": repository.get("owner"),
+                "repo": repository.get("repo"),
+                "default_branch": repository.get("default_branch"),
+                "url": repository.get("url"),
+            },
+            files=files,
+            pr_titles=pr_titles,
+            commit_messages=commit_messages,
+            members=member_names,
+            commits=commits,
+            pull_requests=pull_requests,
+        )
+    except TypeError:
+        # Older service signature without commits=/pull_requests=
+        context = LLMService.build_repo_context(
+            repository={
+                "full_name": repository.get("full_name")
+                or repository.get("name"),
+                "description": repository.get("description"),
+                "language": repository.get("language"),
+            },
+            files=files,
+            pr_titles=pr_titles,
+            commit_messages=commit_messages,
+            members=member_names,
+        )
+        context["commits"] = [
+            {
+                "sha": c.get("sha"),
+                "message": c.get("message"),
+                "files": c.get("files") or [],
+                "member": c.get("member"),
+            }
+            for c in commits[:60]
+        ]
+        context["pull_requests"] = [
+            {
+                "number": pr.get("number"),
+                "title": pr.get("title"),
+                "files": pr.get("files") or [],
+                "merged": pr.get("merged"),
+                "member": pr.get("member"),
+            }
+            for pr in pull_requests[:40]
+        ]
+        context["known_files"] = files
+
+    return context, files, commits, pull_requests
+
+
+def _evidence_payload(analysis: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "repository": analysis.get("repository", {}),
+        "collection": analysis.get("collection", {}),
+        "summary": analysis.get("summary", {}),
+        "member_analysis": analysis.get("member_analysis", []),
+        "task_analysis": analysis.get("task_analysis", []),
+        "evidence_graph": analysis.get("evidence_graph", {}),
+        "tasks": analysis.get("tasks", []),
+        "timeline": analysis.get("timeline", {}),
+        "commits": _extract_commit_evidence(analysis),
+        "pull_requests": _extract_pull_request_evidence(analysis),
+    }
 
 
  
-# 1. GENERATE TASKS
- 
-@router.post("/{project_id}/tasks")
-async def generate_tasks(project_id: int,regenerate: bool = False,db: Session = Depends(get_db)):
-    """
-    Generate project tasks using the LLM.
-    IMPORTANT: No GitHub calls. Reads deterministic JSON only.
-    Generates DETAILED descriptions (3-5 sentences) explaining WHAT, WHY, and HOW.
-    """
+# Routes
+@router.post("/projects/{project_id}/tasks/generate")
+async def generate_tasks(
+    project_id: int,
+    regenerate: bool = True,
+    db: Session = Depends(get_db),
+):
     project = _get_project_or_404(db, project_id)
     record = _get_analysis_or_404(db, project_id)
     analysis = record.analysis_json or {}
-    known_files = _known_files(analysis)
 
-    if not known_files:
-        raise HTTPException(status_code=400, detail="No changed files were found in the stored analysis.")
-
-    repository = _repository_context(analysis)
-    pr_titles: list[str] = []
-    commit_messages: list[str] = []
-
-    member_analysis = analysis.get("member_analysis", [])
-    if isinstance(member_analysis, list):
-        for member in member_analysis:
-            if not isinstance(member, dict):
-                continue
-            details = member.get("details") or {}
-            pull_requests = details.get("pull_requests", [])
-            if isinstance(pull_requests, list):
-                for pr in pull_requests:
-                    if isinstance(pr, dict) and isinstance(pr.get("title"), str) and pr["title"].strip():
-                        pr_titles.append(pr["title"].strip())
-            commits = details.get("commits", [])
-            if isinstance(commits, list):
-                for commit in commits:
-                    if isinstance(commit, dict) and isinstance(commit.get("message"), str) and commit["message"].strip():
-                        commit_messages.append(commit["message"].strip())
-
-    context = LLMService.build_repo_context(
-        repository=repository,
-        files=known_files,
-        pr_titles=pr_titles[:100],
-        commit_messages=commit_messages[:100],
-        members=[member.display_name for member in project.members],
+    context, known_files, commits, pull_requests = _build_llm_context(
+        project, analysis
     )
 
-    llm = LLMService()
+    if not known_files:
+        raise HTTPException(
+            status_code=400,
+            detail="No changed files were found in the stored analysis.",
+        )
+
+    if not commits and not pull_requests:
+        logger.warning(
+            "Project %s: no commits/PRs extracted from member_analysis; "
+            "task generation will rely on file paths only.",
+            project_id,
+        )
+
+    service = LLMService()
+
     try:
-        generated = await llm.generate_tasks(context, known_files)
+        generated = await service.generate_tasks(context, known_files)
     except LLMAPIError as error:
-        raise HTTPException(status_code=502, detail=f"LLM task generation failed: {error}") from error
+        raise HTTPException(
+            status_code=502,
+            detail=f"LLM task generation failed: {error}",
+        ) from error
 
     if not isinstance(generated, list):
-        raise HTTPException(status_code=502, detail="LLM returned an invalid task list.")
+        raise HTTPException(
+            status_code=502,
+            detail="LLM returned an invalid task list.",
+        )
 
     if regenerate:
-        db.query(Task).filter(Task.project_id == project.id, Task.source != "manual").delete(synchronize_session=False)
+        db.query(Task).filter(
+            Task.project_id == project.id,
+            Task.source != "manual",
+        ).delete(synchronize_session=False)
+        db.commit()
+        db.expire_all()
+        project = _get_project_or_404(db, project_id)
 
-    existing_names = {task.name.strip().lower() for task in project.tasks if task.name}
+    existing_names = {
+        task.name.strip().lower()
+        for task in project.tasks
+        if task.name
+    }
+
     created_tasks: list[dict[str, Any]] = []
 
     for item in generated:
         if not isinstance(item, dict):
             continue
+
         name = str(item.get("name") or "").strip()
         if not name:
             continue
+
         key = name.lower()
-        if key in existing_names and not regenerate:
+        if key in existing_names:
             continue
-        file_patterns = _patterns(item.get("file_patterns"))
+
+        # Prefer exact evidence_files from the LLM, then file_patterns.
+        evidence_files = _patterns(item.get("evidence_files"))
+        raw_patterns = _patterns(item.get("file_patterns"))
+        combined = evidence_files + [
+            p for p in raw_patterns if p not in evidence_files
+        ]
+
+        # Always resolve to concrete known files (never store bare "area/*").
+        file_patterns = _expand_to_known_files(combined, known_files, max_files=12)
         if not file_patterns:
             continue
+
+        description = str(item.get("description") or "").strip()
+
+        # Attach supporting commit/PR refs into description for the UI when
+        # the model returned them (kept in description so Task schema stays stable).
+        commit_shas = [
+            str(s).strip()
+            for s in (item.get("commit_shas") or [])
+            if str(s).strip()
+        ][:8]
+        pr_numbers = []
+        for n in item.get("pr_numbers") or []:
+            try:
+                pr_numbers.append(int(n))
+            except (TypeError, ValueError):
+                continue
+        pr_numbers = pr_numbers[:8]
+
+        extra_bits = []
+        if commit_shas:
+            extra_bits.append("Commits: " + ", ".join(s[:12] for s in commit_shas))
+        if pr_numbers:
+            extra_bits.append(
+                "PRs: " + ", ".join(f"#{n}" for n in pr_numbers)
+            )
+        if extra_bits and description:
+            description = description + "\n\n" + " · ".join(extra_bits)
+
         task = Task(
             project_id=project.id,
             name=name[:255],
-            description=item.get("description"),
+            description=description,
             file_patterns=file_patterns,
             source="llm",
         )
         db.add(task)
         db.flush()
-        created_tasks.append({
-            "id": task.id, "name": task.name, "description": task.description,
-            "file_patterns": file_patterns, "source": task.source,
-        })
+
+        created_tasks.append(
+            {
+                "id": task.id,
+                "name": task.name,
+                "description": task.description,
+                "file_patterns": file_patterns,
+                "evidence_files": evidence_files[:12],
+                "commit_shas": commit_shas,
+                "pr_numbers": pr_numbers,
+                "source": task.source,
+            }
+        )
         existing_names.add(key)
 
     try:
         db.commit()
     except Exception as error:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to save generated tasks: {error}") from error
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save generated tasks: {error}",
+        ) from error
 
     db.expire_all()
     project = _get_project_or_404(db, project_id)
-    analysis["tasks"] = _task_dicts(project)
-    analysis["llm"] = {**(analysis.get("llm") or {}), "task_generation": {"status": "llm", "generated": len(created_tasks)}}
+    all_tasks = _task_dicts(project)
+
+    analysis["tasks"] = all_tasks
+    analysis["llm"] = {
+        **(analysis.get("llm") or {}),
+        "task_generation": {
+            "status": "llm",
+            "generated": len(created_tasks),
+            "commits_used": len(commits),
+            "pull_requests_used": len(pull_requests),
+            "known_files": len(known_files),
+        },
+    }
     _save_analysis(db, record, analysis)
 
     return {
-        "project_id": project_id, "status": "llm", "generated": len(created_tasks),
-        "tasks": created_tasks, "all_tasks": _task_dicts(project),
+        "project_id": project_id,
+        "status": "llm",
+        "model": getattr(service, "model", None),
+        "generated": len(created_tasks),
+        "tasks": created_tasks,
+        "all_tasks": all_tasks,
+        "context_stats": {
+            "commits": len(commits),
+            "pull_requests": len(pull_requests),
+            "known_files": len(known_files),
+        },
     }
 
 
- 
-# 2. MATCH MEMBERS TO TASKS
-@router.post("/{project_id}/match")
-async def match_members_to_tasks(project_id: int, db: Session = Depends(get_db)):
-    """Match members to tasks using deterministic evidence plus LLM judgment."""
+@router.post("/projects/{project_id}/tasks/match")
+async def match_members_to_tasks(
+    project_id: int,
+    db: Session = Depends(get_db),
+):
     project = _get_project_or_404(db, project_id)
     record = _get_analysis_or_404(db, project_id)
     analysis = record.analysis_json or {}
     tasks = _task_dicts(project)
 
     if not tasks:
-        raise HTTPException(status_code=400, detail="No tasks exist for this project. Generate tasks first.")
+        raise HTTPException(
+            status_code=400,
+            detail="No tasks exist for this project. Generate tasks first.",
+        )
 
-    evidence = {
-        "member_analysis": analysis.get("member_analysis", []),
-        "task_analysis": analysis.get("task_analysis", []),
-        "evidence_graph": analysis.get("evidence_graph", {}),
-        "summary": analysis.get("summary", {}),
-    }
+    evidence = _evidence_payload(analysis)
+    service = LLMService()
 
-    llm = LLMService()
     try:
-        matching = await llm.match_members_to_tasks(evidence, tasks)
+        matching = await service.match_members_to_tasks(evidence, tasks)
     except LLMAPIError as error:
-        raise HTTPException(status_code=502, detail=f"LLM task matching failed: {error}") from error
+        raise HTTPException(
+            status_code=502,
+            detail=f"LLM task matching failed: {error}",
+        ) from error
+
+    if not isinstance(matching, dict):
+        raise HTTPException(
+            status_code=502,
+            detail="LLM returned an invalid task matching result.",
+        )
 
     analysis["task_member_matching"] = matching
-    analysis["llm"] = {**(analysis.get("llm") or {}), "task_matching": {"status": matching.get("status", "unknown")}}
-    _save_analysis(db, record, analysis)
-
-    return {"project_id": project_id, "status": matching.get("status", "unknown"), "matching": matching}
-
-
- 
-# 3. FINAL EXPLANATION
-@router.post("/{project_id}/explanation")
-async def generate_explanation(project_id: int, db: Session = Depends(get_db)):
-    """Generate final project explanation using only saved JSON evidence."""
-    _get_project_or_404(db, project_id)
-    record = _get_analysis_or_404(db, project_id)
-    analysis = record.analysis_json or {}
-
-    evidence = {
-        "member_analysis": analysis.get("member_analysis", []),
-        "task_analysis": analysis.get("task_analysis", []),
-        "evidence_graph": analysis.get("evidence_graph", {}),
-        "summary": analysis.get("summary", {}),
+    analysis["llm"] = {
+        **(analysis.get("llm") or {}),
+        "task_matching": {"status": matching.get("status", "llm")},
     }
-    timeline = analysis.get("timeline", {})
-    matching = analysis.get("task_member_matching", {})
-    repository = analysis.get("repository", {})
-    repo_info = {"language": repository.get("language"), "description": repository.get("description")}
-
-    llm = LLMService()
-    try:
-        explanation = await llm.explain_project(evidence, timeline, matching, repo_info=repo_info)
-    except LLMAPIError as error:
-        raise HTTPException(status_code=502, detail=f"LLM final explanation failed: {error}") from error
-
-    analysis["llm_analysis"] = explanation
-    analysis["llm"] = {**(analysis.get("llm") or {}), "final_explanation": {"status": "llm"}}
     _save_analysis(db, record, analysis)
 
-    return {"project_id": project_id, "status": "llm", "explanation": explanation}
+    return {
+        "project_id": project_id,
+        "status": matching.get("status", "llm"),
+        "model": matching.get("model", getattr(service, "model", None)),
+        "members": matching.get("members", []),
+        "tasks": matching.get("tasks", []),
+        "matching": matching,
+    }
 
 
- 
-# OPTIONAL: RUN ALL THREE LLM STEPS
-@router.post("/{project_id}/run")
-async def run_llm_pipeline(project_id: int, regenerate_tasks: bool = False, db: Session = Depends(get_db)):
-    """Execute complete LLM pipeline: Tasks → Matching → Explanation. No GitHub calls."""
+@router.post("/projects/{project_id}/explain")
+async def generate_explanation(
+    project_id: int,
+    db: Session = Depends(get_db),
+):
     project = _get_project_or_404(db, project_id)
     record = _get_analysis_or_404(db, project_id)
     analysis = record.analysis_json or {}
-    known_files = _known_files(analysis)
-
-    if not known_files:
-        raise HTTPException(status_code=400, detail="No known files exist in the stored analysis.")
-
-    repository = _repository_context(analysis)
-    llm = LLMService()
-    pr_titles: list[str] = []
-    commit_messages: list[str] = []
-
-    member_analysis = analysis.get("member_analysis", [])
-    if isinstance(member_analysis, list):
-        for member_data in member_analysis:
-            if not isinstance(member_data, dict):
-                continue
-            details = member_data.get("details") or {}
-            for pr in details.get("pull_requests", []):
-                if isinstance(pr, dict) and isinstance(pr.get("title"), str) and pr["title"].strip():
-                    pr_titles.append(pr["title"].strip())
-            for commit in details.get("commits", []):
-                if isinstance(commit, dict) and isinstance(commit.get("message"), str) and commit["message"].strip():
-                    commit_messages.append(commit["message"].strip())
-
-    context = LLMService.build_repo_context(
-        repository=repository, files=known_files,
-        pr_titles=pr_titles[:100], commit_messages=commit_messages[:100],
-        members=[member.display_name for member in project.members],
-    )
-
-    # STEP 1 — TASK GENERATION
-    try:
-        generated = await llm.generate_tasks(context, known_files)
-    except LLMAPIError as error:
-        raise HTTPException(status_code=502, detail=f"LLM task generation failed: {error}") from error
-
-    if not isinstance(generated, list):
-        raise HTTPException(status_code=502, detail="LLM returned invalid generated tasks.")
-
-    if regenerate_tasks:
-        db.query(Task).filter(Task.project_id == project.id, Task.source != "manual").delete(synchronize_session=False)
-
-    existing_names = {task.name.strip().lower() for task in project.tasks if task.name}
-    for item in generated:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name") or "").strip()
-        if not name:
-            continue
-        file_patterns = _patterns(item.get("file_patterns"))
-        if not file_patterns:
-            continue
-        key = name.lower()
-        if key in existing_names:
-            continue
-        db.add(Task(project_id=project.id, name=name[:255], description=item.get("description"), file_patterns=file_patterns, source="llm"))
-        existing_names.add(key)
-
-    try:
-        db.commit()
-    except Exception as error:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to save generated tasks: {error}") from error
-
-    db.expire_all()
-    project = _get_project_or_404(db, project_id)
     tasks = _task_dicts(project)
 
-    # STEP 2 — MATCH
-    evidence = {
-        "member_analysis": analysis.get("member_analysis", []),
-        "task_analysis": analysis.get("task_analysis", []),
-        "evidence_graph": analysis.get("evidence_graph", {}),
-        "summary": analysis.get("summary", {}),
-    }
-    try:
-        matching = await llm.match_members_to_tasks(evidence, tasks)
-    except LLMAPIError as error:
-        raise HTTPException(status_code=502, detail=f"LLM task matching failed: {error}") from error
+    if not tasks:
+        raise HTTPException(
+            status_code=400,
+            detail="No tasks exist for this project. Generate tasks first.",
+        )
 
-    # STEP 3 — EXPLANATION
+    matching = analysis.get("task_member_matching") or {}
+    service = LLMService()
+
+    if not matching.get("members") and not matching.get("tasks"):
+        evidence = _evidence_payload(analysis)
+        try:
+            matching = await service.match_members_to_tasks(evidence, tasks)
+        except LLMAPIError as error:
+            raise HTTPException(
+                status_code=502,
+                detail=f"LLM task matching failed: {error}",
+            ) from error
+        analysis["task_member_matching"] = matching
+
+    evidence = _evidence_payload(analysis)
     timeline = analysis.get("timeline", {})
-    repo_info = {"language": repository.get("language"), "description": repository.get("description")}
-    try:
-        explanation = await llm.explain_project(evidence, timeline, matching, repo_info=repo_info)
-    except LLMAPIError as error:
-        raise HTTPException(status_code=502, detail=f"LLM final explanation failed: {error}") from error
+    repository = analysis.get("repository", {})
+    repo_info = {
+        "owner": repository.get("owner"),
+        "repo": repository.get("repo"),
+        "full_name": repository.get("full_name"),
+        "name": repository.get("name"),
+        "language": repository.get("language"),
+        "description": repository.get("description"),
+        "default_branch": repository.get("default_branch"),
+        "url": repository.get("url"),
+    }
 
-    # SAVE EVERYTHING
-    analysis["tasks"] = tasks
-    analysis["task_member_matching"] = matching
+    try:
+        explanation = await service.explain_project(
+            evidence,
+            timeline,
+            matching,
+            repo_info=repo_info,
+        )
+    except TypeError:
+        # Older signature without repo_info
+        try:
+            explanation = await service.explain_project(
+                evidence, timeline, matching
+            )
+        except LLMAPIError as error:
+            raise HTTPException(
+                status_code=502,
+                detail=f"LLM final explanation failed: {error}",
+            ) from error
+    except LLMAPIError as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"LLM final explanation failed: {error}",
+        ) from error
+
     analysis["llm_analysis"] = explanation
     analysis["llm"] = {
-        "status": "completed",
-        "task_generation": {"status": "llm", "generated": len(generated)},
-        "task_matching": {"status": matching.get("status", "unknown")},
+        **(analysis.get("llm") or {}),
         "final_explanation": {"status": "llm"},
     }
     _save_analysis(db, record, analysis)
 
     return {
-        "project_id": project_id, "status": "completed",
-        "tasks": tasks, "task_member_matching": matching, "llm_analysis": explanation,
+        "project_id": project_id,
+        "status": "llm",
+        "model": (
+            explanation.get("model", getattr(service, "model", None))
+            if isinstance(explanation, dict)
+            else getattr(service, "model", None)
+        ),
+        "explanation": explanation,
     }
 
 
- 
-# PROOF OF UNDERSTANDING - QUESTIONS
-@router.post("/projects/{project_id}/members/{member_id}/understanding/questions")
-async def create_understanding_questions(project_id: int, member_id: int, db: Session = Depends(get_db)):
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found.")
+@router.post("/projects/{project_id}/run")
+async def run_llm_pipeline(
+    project_id: int,
+    regenerate_tasks: bool = True,
+    db: Session = Depends(get_db),
+):
+    # Reuse generate + match + explain
+    gen = await generate_tasks(
+        project_id=project_id,
+        regenerate=regenerate_tasks,
+        db=db,
+    )
+    match = await match_members_to_tasks(project_id=project_id, db=db)
+    explanation = await generate_explanation(project_id=project_id, db=db)
+    return {
+        "project_id": project_id,
+        "status": "completed",
+        "tasks": gen.get("all_tasks", []),
+        "task_member_matching": match.get("matching", {}),
+        "llm_analysis": explanation.get("explanation"),
+    }
 
-    member = db.query(Member).filter(Member.id == member_id, Member.project_id == project_id).first()
+
+@router.post(
+    "/projects/{project_id}/members/{member_id}/understanding/questions"
+)
+async def create_understanding_questions(
+    project_id: int,
+    member_id: int,
+    db: Session = Depends(get_db),
+):
+    project = _get_project_or_404(db, project_id)
+    member = (
+        db.query(Member)
+        .filter(Member.id == member_id, Member.project_id == project_id)
+        .first()
+    )
     if member is None:
         raise HTTPException(status_code=404, detail="Member not found.")
 
-    analysis_row = (
-        db.query(AnalysisResult)
-        .filter(AnalysisResult.project_id == project_id)
-        .order_by(AnalysisResult.created_at.desc())
-        .first()
-    )
-    if analysis_row is None:
-        raise HTTPException(status_code=404, detail="No analysis exists for this project. Run project analysis first.")
-
-    analysis = analysis_row.analysis_json or {}
-    tasks = analysis.get("tasks") or []
-    matches = analysis.get("task_member_matching") or {"members": [], "tasks": []}
+    record = _get_analysis_or_404(db, project_id)
+    analysis = record.analysis_json or {}
+    tasks = analysis.get("tasks") or _task_dicts(project)
+    matches = analysis.get("task_member_matching") or {
+        "members": [],
+        "tasks": [],
+    }
 
     member_input = {
         "member_id": member.id,
-        "display_name": member.display_name,
+        "display_name": member.display_name or member.github_username,
         "github_username": member.github_username,
     }
 
     service = LLMService()
     try:
         result = await service.generate_understanding_questions(
-            member=member_input, evidence=analysis, tasks=tasks, matches_=matches
+            member=member_input,
+            evidence=analysis,
+            tasks=tasks,
+            matches_=matches,
         )
-    except LLMAPIError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except LLMAPIError as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"LLM question generation failed: {error}",
+        ) from error
+
+    questions = result.get("questions", [])
+    if not isinstance(questions, list) or not questions:
+        raise HTTPException(
+            status_code=502,
+            detail="LLM returned no understanding questions.",
+        )
 
     session = UnderstandingSession(
         project_id=project_id,
         member_id=member_id,
         status="QUESTIONS_GENERATED",
-        questions_json={"questions": result["questions"]},
+        questions_json={"questions": questions},
         answers_json={},
     )
     db.add(session)
-    db.commit()
-    db.refresh(session)
+    try:
+        db.commit()
+        db.refresh(session)
+    except Exception as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create understanding session: {error}",
+        ) from error
 
     return {
-        "session_id": session.id, "project_id": project_id, "member_id": member_id,
-        "member": result.get("member"), "questions": result["questions"],
-        "status": session.status, "model": result.get("model"),
+        "session_id": session.id,
+        "project_id": project_id,
+        "member_id": member_id,
+        "member": result.get("member", member_input),
+        "questions": questions,
+        "status": session.status,
+        "model": result.get("model", getattr(service, "model", None)),
     }
 
 
- 
-# PROOF OF UNDERSTANDING - EVALUATION + ADVICE
-@router.post("/projects/{project_id}/members/{member_id}/understanding/{session_id}/evaluate")
+@router.post(
+    "/projects/{project_id}/members/{member_id}/understanding/{session_id}/evaluate"
+)
 async def evaluate_understanding(
-    project_id: int, member_id: int, session_id: int, answers: dict[str, str], db: Session = Depends(get_db)
+    project_id: int,
+    member_id: int,
+    session_id: int,
+    payload: UnderstandingAnswers,
+    db: Session = Depends(get_db),
 ):
-    """
-    Evaluate answers against evidence and provide SPECIFIC ARCHITECTURAL/METHODOLOGICAL ADVICE.
-    Advice is grounded in actual code changes and understanding gaps, never generic.
-    """
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found.")
+    _get_project_or_404(db, project_id)
 
-    member = db.query(Member).filter(Member.id == member_id, Member.project_id == project_id).first()
+    member = (
+        db.query(Member)
+        .filter(Member.id == member_id, Member.project_id == project_id)
+        .first()
+    )
     if member is None:
         raise HTTPException(status_code=404, detail="Member not found.")
 
@@ -515,68 +854,90 @@ async def evaluate_understanding(
         .first()
     )
     if session is None:
-        raise HTTPException(status_code=404, detail="Understanding session not found.")
+        raise HTTPException(
+            status_code=404, detail="Understanding session not found."
+        )
     if session.status == "EVALUATED":
-        raise HTTPException(status_code=409, detail="This understanding session has already been evaluated.")
+        raise HTTPException(
+            status_code=409,
+            detail="This understanding session has already been evaluated.",
+        )
 
-    analysis_row = (
-        db.query(AnalysisResult)
-        .filter(AnalysisResult.project_id == project_id)
-        .order_by(AnalysisResult.created_at.desc())
-        .first()
-    )
-    if analysis_row is None:
-        raise HTTPException(status_code=404, detail="No analysis exists for this project.")
-
-    analysis = analysis_row.analysis_json or {}
+    record = _get_analysis_or_404(db, project_id)
+    analysis = record.analysis_json or {}
     questions_data = session.questions_json or {}
-    questions = questions_data.get("questions") or []
-
+    questions = questions_data.get("questions", [])
     if not questions:
-        raise HTTPException(status_code=400, detail="This session contains no questions.")
-    if not isinstance(answers, dict):
-        raise HTTPException(status_code=422, detail="Answers must be a JSON object.")
+        raise HTTPException(
+            status_code=400, detail="This session contains no questions."
+        )
 
     clean_answers: dict[str, str] = {}
     for question in questions:
+        if not isinstance(question, dict):
+            continue
         question_id = str(question.get("id") or "").strip()
         if not question_id:
             continue
-        answer = answers.get(question_id, "")
-        if not isinstance(answer, str):
-            answer = str(answer)
-        clean_answers[question_id] = answer.strip()[:5000]
+        answer = payload.answers.get(question_id, "")
+        clean_answers[question_id] = str(answer or "").strip()[:5000]
 
     member_input = {
         "member_id": member.id,
-        "display_name": member.display_name,
+        "display_name": member.display_name or member.github_username,
         "github_username": member.github_username,
     }
 
     service = LLMService()
     try:
         evaluation = await service.evaluate_understanding_answers(
-            member=member_input, questions=questions, answers=clean_answers, evidence=analysis
+            member=member_input,
+            questions=questions,
+            answers=clean_answers,
+            evidence=analysis,
         )
-    except LLMAPIError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except LLMAPIError as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"LLM understanding evaluation failed: {error}",
+        ) from error
+
+    try:
+        score = int(evaluation.get("overall_score", 0))
+    except (TypeError, ValueError):
+        score = 0
+    score = max(0, min(100, score))
 
     session.answers_json = clean_answers
     session.evaluation_json = evaluation
-    session.understanding_score = int(evaluation.get("overall_score", 0))
+    session.understanding_score = score
     session.status = "EVALUATED"
     session.completed_at = utc_now()
-    db.commit()
-    db.refresh(session)
+
+    try:
+        db.commit()
+        db.refresh(session)
+    except Exception as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save understanding evaluation: {error}",
+        ) from error
 
     return {
-        "session_id": session.id, "project_id": project_id, "member_id": member_id,
-        "member": evaluation.get("member"), "status": session.status,
-        "understanding_score": session.understanding_score,
+        "session_id": session.id,
+        "project_id": project_id,
+        "member_id": member_id,
+        "member": evaluation.get("member", member_input),
+        "status": session.status,
+        "understanding_score": score,
+        "overall_score": score,
         "understanding_level": evaluation.get("overall_level"),
+        "overall_level": evaluation.get("overall_level"),
         "overall_summary": evaluation.get("overall_summary"),
         "questions": evaluation.get("questions", []),
         "strengths": evaluation.get("strengths", []),
         "areas_to_improve": evaluation.get("areas_to_improve", []),
-        "advice": evaluation.get("advice", ""),  # NEW FIELD: Evidence-based architectural/methodological advice
+        "advice": evaluation.get("advice", ""),
+        "model": evaluation.get("model", getattr(service, "model", None)),
     }

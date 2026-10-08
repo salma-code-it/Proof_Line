@@ -145,21 +145,22 @@ export async function getMemberTimeline(
   );
 }
 
+// LLM 
 export async function generateTasks(projectId) {
   return request(() =>
-    apiClient.post(`/llm/${projectId}/tasks`)
+    apiClient.post(`/llm/projects/${projectId}/tasks/generate`)
   );
 }
 
 export async function matchTasksToMembers(projectId) {
   return request(() =>
-    apiClient.post(`/llm/${projectId}/match`)
+    apiClient.post(`/llm/projects/${projectId}/tasks/match`)
   );
 }
 
 export async function explainProject(projectId) {
   return request(() =>
-    apiClient.post(`/llm/${projectId}/explanation`)
+    apiClient.post(`/llm/projects/${projectId}/explain`)
   );
 }
 
@@ -241,6 +242,12 @@ export async function getMemberData(projectId, memberId) {
   };
 }
 
+export async function getContributionAnalysis(projectId) {
+  return request(() =>
+    apiClient.get(`/projects/${projectId}/contributions`)
+  );
+}
+
 export function getApiBaseUrl() {
   return baseURL;
 }
@@ -265,6 +272,7 @@ const api = {
   getDashboardData,
   getMemberData,
   getApiBaseUrl,
+  getContributionAnalysis,
 };
 
 export default api;

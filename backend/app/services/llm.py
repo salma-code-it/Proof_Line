@@ -18,14 +18,12 @@ class LLMAPIError(Exception):
 
   
 # CONSTANTS
-  
-
 ALIGNMENTS = {"ALIGNED", "PARTIAL"}
 LEVELS = ("LOW", "MEDIUM", "HIGH")
 
-MAX_GENERATED_TASKS = 8
+MAX_GENERATED_TASKS = 15
 MAX_PATTERNS_PER_TASK = 8
-MAX_PAIRS = 40
+MAX_PAIRS = 120
 MAX_PAYLOAD_CHARS = 48_000
 MAX_UNDERSTANDING_QUESTIONS = 6
 MAX_EVIDENCE_FILES_PER_QUESTION = 5
@@ -183,33 +181,72 @@ class LLMService:
 
     @staticmethod
     def _extract_json(text: str) -> dict[str, Any]:
-        cleaned = text.strip()
+        """Best-effort parse of an LLM response into a JSON object."""
+        cleaned = (text or "").strip()
+
         if cleaned.startswith("```"):
             lines = cleaned.splitlines()
-            body = lines[1:-1] if lines and lines[-1].strip() == "```" else lines[1:]
-            cleaned = "\n".join(body).strip()
+            if lines and lines[0].strip().startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            cleaned = "\n".join(lines).strip()
 
-        try:
-            value = json.loads(cleaned)
-            if isinstance(value, dict):
-                return value
-        except json.JSONDecodeError:
-            pass
+        if cleaned.lower().startswith("json"):
+            cleaned = cleaned[4:].lstrip(":\n ").strip()
 
+        candidates: list[str] = [cleaned]
         start, end = cleaned.find("{"), cleaned.rfind("}")
         if start >= 0 and end > start:
+            candidates.append(cleaned[start : end + 1])
+
+        for candidate in list(candidates):
+            fixed = candidate
+            while ",}" in fixed or ",]" in fixed:
+                fixed = fixed.replace(",}", "}").replace(",]", "]")
+            if fixed != candidate:
+                candidates.append(fixed)
+
+        for candidate in candidates:
             try:
-                value = json.loads(cleaned[start : end + 1])
-                if isinstance(value, dict):
-                    return value
-            except json.JSONDecodeError:
-                pass
+                value = json.loads(candidate)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(value, dict):
+                return value
+            if isinstance(value, list) and value and isinstance(value[0], dict):
+                return value[0]
 
-        raise LLMAPIError("The LLM did not return valid JSON.")
+        raise LLMAPIError(
+            "The LLM did not return valid JSON. "
+            f"Raw head: {clip(cleaned, 200)}"
+        )
 
-    async def _ask_json(self, system_prompt: str, user_prompt: str, max_tokens: int) -> dict[str, Any]:
-        return self._extract_json(await self._chat(system_prompt, user_prompt, max_tokens))
-      
+    async def _ask_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int,
+    ) -> dict[str, Any]:
+        """Parse JSON with one strict retry if the first reply is invalid."""
+        strict_system = (
+            system_prompt
+            + "\n\nCRITICAL: Reply with a single JSON object only. "
+            "No markdown. No code fences. No commentary before or after the JSON."
+        )
+        raw = await self._chat(strict_system, user_prompt, max_tokens)
+        try:
+            return self._extract_json(raw)
+        except LLMAPIError:
+            repair_prompt = (
+                "Your previous reply was not valid JSON.\n"
+                "Convert the following content into ONE valid JSON object "
+                "that matches the schema requested earlier. "
+                "Output JSON only.\n\n"
+                f"{clip(raw, 6000)}"
+            )
+            raw2 = await self._chat(strict_system, repair_prompt, max_tokens)
+            return self._extract_json(raw2)
 
     @staticmethod
     def build_repo_context(*, repository: dict[str, Any], files: list[str], pr_titles: list[str], commit_messages: list[str], members: list[str]) -> dict[str, Any]:
@@ -339,38 +376,199 @@ class LLMService:
         return result      
 
     @staticmethod
-    def build_pairs(evidence: dict[str, Any], tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        tasks_by_id = {t["id"]: t for t in tasks}
-        members_by_name = {m.get("display_name"): m for m in evidence.get("member_analysis", [])}
-        pairs: list[dict[str, Any]] = []
-        for item in evidence.get("task_analysis", []):
-            task = tasks_by_id.get(item.get("task_id"))
-            if task is None:
-                continue
-            patterns = task.get("file_patterns") or []
-            for name, row in (item.get("contributors") or {}).items():
-                member = members_by_name.get(name)
-                if member is None:
+    def _collect_member_files(member: dict[str, Any]) -> list[str]:
+        """Unique file paths observed for one member (files, commits, PRs)."""
+        details = member.get("details") or {}
+        files: list[str] = []
+        seen: set[str] = set()
+
+        files_by_kind = details.get("files") or {}
+        if isinstance(files_by_kind, dict):
+            for paths in files_by_kind.values():
+                if not isinstance(paths, list):
                     continue
+                for path in paths:
+                    if not isinstance(path, str):
+                        continue
+                    path = path.replace("\\", "/").strip()
+                    if path and path not in seen:
+                        seen.add(path)
+                        files.append(path)
+
+        for commit in details.get("commits") or []:
+            if not isinstance(commit, dict):
+                continue
+            for path in commit.get("files") or []:
+                if not isinstance(path, str):
+                    continue
+                path = path.replace("\\", "/").strip()
+                if path and path not in seen:
+                    seen.add(path)
+                    files.append(path)
+
+        for pr in details.get("pull_requests") or []:
+            if not isinstance(pr, dict):
+                continue
+            for path in pr.get("files") or []:
+                if isinstance(path, str):
+                    p = path.replace("\\", "/").strip()
+                elif isinstance(path, dict):
+                    p = str(
+                        path.get("filename") or path.get("path") or ""
+                    ).replace("\\", "/").strip()
+                else:
+                    continue
+                if p and p not in seen:
+                    seen.add(p)
+                    files.append(p)
+
+        return files
+
+    def build_pairs(
+        self,
+        evidence: dict[str, Any],
+        tasks: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """
+        Match every stored task against every member by file intersection.
+
+        Does NOT rely on task_analysis work-areas (those use different IDs
+        than LLM-generated tasks).
+        """
+        pairs: list[dict[str, Any]] = []
+
+        members = [
+            m
+            for m in (evidence.get("member_analysis") or [])
+            if isinstance(m, dict) and m.get("member_id") is not None
+        ]
+
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            try:
+                task_id = int(task["id"])
+            except (KeyError, TypeError, ValueError):
+                continue
+
+            patterns = [
+                str(p).replace("\\", "/").strip()
+                for p in (task.get("file_patterns") or [])
+                if str(p).strip()
+            ]
+            if not patterns:
+                continue
+
+            for member in members:
+                try:
+                    member_id = int(member["member_id"])
+                except (TypeError, ValueError):
+                    continue
+
+                name = (
+                    member.get("display_name")
+                    or member.get("github_username")
+                    or member.get("member")
+                    or f"member-{member_id}"
+                )
+
+                member_files = self._collect_member_files(member)
+                if not member_files:
+                    continue
+
+                matched = [
+                    path for path in member_files if matches(path, patterns)
+                ]
+                if not matched:
+                    continue
+
                 details = member.get("details") or {}
-                prs = [pr for pr in details.get("pull_requests", []) if any(matches(f, patterns) for f in pr.get("files", []))]
-                commits = [c for c in details.get("commits", []) if any(matches(f, patterns) for f in c.get("files", []))]
-                pairs.append({
-                    "pair_id": pair_id(member["member_id"], task["id"]),
-                    "member_id": member["member_id"],
-                    "member": name,
-                    "task_id": task["id"],
-                    "task": task["name"],
-                    "description": clip(task.get("description"), 300),
-                    "evidence_units": int(row.get("evidence_units") or 0),
-                    "matched_files": sorted(row.get("matched_files") or [])[:8],
-                    "pr_titles": [clip(pr.get("title"), 120) for pr in prs[:5]],
-                    "commit_messages": [clip(c.get("message"), 100) for c in commits[:5]],
-                })
+
+                related_commits = []
+                for c in details.get("commits") or []:
+                    if not isinstance(c, dict):
+                        continue
+                    c_files = [
+                        str(f).replace("\\", "/")
+                        for f in (c.get("files") or [])
+                        if isinstance(f, str)
+                    ]
+                    if any(matches(f, patterns) for f in c_files):
+                        related_commits.append(c)
+
+                related_prs = []
+                for pr in details.get("pull_requests") or []:
+                    if not isinstance(pr, dict):
+                        continue
+                    pr_files: list[str] = []
+                    for f in pr.get("files") or []:
+                        if isinstance(f, str):
+                            pr_files.append(f.replace("\\", "/"))
+                        elif isinstance(f, dict) and (
+                            f.get("filename") or f.get("path")
+                        ):
+                            pr_files.append(
+                                str(
+                                    f.get("filename") or f.get("path")
+                                ).replace("\\", "/")
+                            )
+                    if any(matches(f, patterns) for f in pr_files):
+                        related_prs.append(pr)
+
+                evidence_units = max(
+                    len(matched),
+                    len(related_commits) + len(related_prs),
+                )
+
+                file_extensions = sorted(
+                    {
+                        os.path.splitext(p)[1].lower()
+                        for p in matched
+                        if os.path.splitext(p)[1]
+                    }
+                )
+
+                pairs.append(
+                    {
+                        "pair_id": pair_id(member_id, task_id),
+                        "member_id": member_id,
+                        "member": name,
+                        "task_id": task_id,
+                        "task": task.get("name") or f"Task {task_id}",
+                        "description": clip(task.get("description"), 400),
+                        "evidence_units": evidence_units,
+                        "matched_files": sorted(matched)[:12],
+                        "primary_file": matched[0] if matched else None,
+                        "file_extensions": file_extensions,
+                        "pr_titles": [
+                            clip(pr.get("title"), 120)
+                            for pr in related_prs[:5]
+                        ],
+                        "commit_messages": [
+                            clip(c.get("message"), 120)
+                            for c in related_commits[:5]
+                        ],
+                        "commit_shas": [
+                            str(c.get("sha") or "")[:20]
+                            for c in related_commits[:5]
+                            if c.get("sha")
+                        ],
+                        "pr_numbers": [
+                            pr.get("number")
+                            for pr in related_prs[:5]
+                            if pr.get("number") is not None
+                        ],
+                    }
+                )
+
         pairs.sort(key=lambda p: p["evidence_units"], reverse=True)
         return pairs[:MAX_PAIRS]
 
-    async def match_members_to_tasks(self, evidence: dict[str, Any], tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    async def match_members_to_tasks(
+        self,
+        evidence: dict[str, Any],
+        tasks: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         pairs = self.build_pairs(evidence, tasks)
         judgments: dict[str, dict[str, Any]] = {}
         status = "no_candidates"
@@ -382,10 +580,34 @@ class LLMService:
             except LLMAPIError as exc:
                 status = "deterministic_fallback"
                 error = clip(str(exc), 300)
-        return self._assemble_matches(evidence, tasks, pairs, judgments, status, error)
+        return self._assemble_matches(
+            evidence, tasks, pairs, judgments, status, error
+        )
 
-    async def _judge_pairs(self, pairs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-        compact = [{key: pair[key] for key in ("pair_id", "member", "task", "description", "evidence_units", "matched_files", "pr_titles", "commit_messages")} for pair in pairs]
+    async def _judge_pairs(
+        self,
+        pairs: list[dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        # Always use .get() so missing optional keys never raise KeyError.
+        compact = []
+        for pair in pairs:
+            compact.append(
+                {
+                    "pair_id": pair.get("pair_id"),
+                    "member": pair.get("member"),
+                    "task": pair.get("task"),
+                    "description": pair.get("description"),
+                    "evidence_units": pair.get("evidence_units", 0),
+                    "matched_files": pair.get("matched_files") or [],
+                    "primary_file": pair.get("primary_file"),
+                    "file_extensions": pair.get("file_extensions") or [],
+                    "pr_titles": pair.get("pr_titles") or [],
+                    "commit_messages": pair.get("commit_messages") or [],
+                    "commit_shas": pair.get("commit_shas") or [],
+                    "pr_numbers": pair.get("pr_numbers") or [],
+                }
+            )
+
         user_prompt = (
             "For each pair, judge whether the member's observed repository "
             "work really corresponds to the task. ALIGNED: the files, PR "
@@ -432,8 +654,20 @@ class LLMService:
             if units < 2:
                 confidence = cap_level(confidence, "MEDIUM")
             final_pairs.append({
-                "member_id": pair["member_id"], "member": pair["member"], "task_id": pair["task_id"], "task": pair["task"],
-                "alignment": alignment, "confidence": confidence, "reason": reason, "evidence_units": units, "matched_files": pair["matched_files"], "source": source,
+                "member_id": pair["member_id"],
+                "member": pair["member"],
+                "task_id": pair["task_id"],
+                "task": pair["task"],
+                "alignment": alignment,
+                "confidence": confidence,
+                "reason": reason,
+                "evidence_units": units,
+                "matched_files": pair.get("matched_files") or [],
+                "primary_file": pair.get("primary_file"),
+                "file_extensions": pair.get("file_extensions") or [],
+                "commit_shas": pair.get("commit_shas") or [],
+                "pr_numbers": pair.get("pr_numbers") or [],
+                "source": source,
             })
 
         member_rows = []
@@ -442,7 +676,13 @@ class LLMService:
             matched_ids = {p["task_id"] for p in own}
             member_rows.append({
                 "member_id": member["member_id"], "member": member["display_name"],
-                "tasks": [{k: p[k] for k in ("task_id", "task", "alignment", "confidence", "reason", "evidence_units", "matched_files")} for p in own],
+                "tasks": [{
+                    k: p.get(k) for k in (
+                        "task_id", "task", "alignment", "confidence", "reason",
+                        "evidence_units", "matched_files", "primary_file",
+                        "file_extensions", "commit_shas", "pr_numbers",
+                    )
+                } for p in own],
                 "tasks_without_observed_work": [t["name"] for t in tasks if t["id"] not in matched_ids],
                 "activity_outside_tasks": bool((member.get("totals") or {}).get("changed_files_count") and not own),
             })
@@ -834,7 +1074,107 @@ class LLMService:
 
       
     # ROLE 4 - EVALUATE ANSWERS + ADVICE 
-    async def evaluate_understanding_answers(self, member: dict[str, Any], questions: list[dict[str, Any]], answers: dict[str, str], evidence: dict[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _fallback_evaluation(
+        *,
+        member_id: int,
+        member_name: Any,
+        questionnaire: list[dict[str, Any]],
+        error: str = "",
+    ) -> dict[str, Any]:
+        """Usable result when the LLM fails to return valid JSON (avoids 502)."""
+        final_evaluations = []
+        for question in questionnaire:
+            answer = str(question.get("answer") or "").strip()
+            q_ev = question.get("evidence") or {}
+            files = q_ev.get("files") or []
+            commits = q_ev.get("related_commits") or []
+            file_hint = ", ".join(str(f) for f in files[:3]) or "the referenced files"
+            commit_hint = ""
+            if commits:
+                msgs = [
+                    c.get("message")
+                    for c in commits[:2]
+                    if isinstance(c, dict) and c.get("message")
+                ]
+                if msgs:
+                    commit_hint = " Related commits: " + "; ".join(
+                        clip(m, 80) for m in msgs
+                    ) + "."
+
+            if not answer:
+                evaluation, score = "INSUFFICIENT_EVIDENCE", 0
+                feedback = "No answer was provided for this question."
+            elif len(answer) < 40:
+                evaluation, score = "INCORRECT", 20
+                feedback = (
+                    "The answer is too short to demonstrate understanding of "
+                    f"{file_hint}."
+                )
+            else:
+                evaluation, score = "PARTIAL", 45
+                feedback = (
+                    "Fallback scoring was used because the language model "
+                    "did not return valid JSON. A reviewer should confirm."
+                )
+
+            final_evaluations.append(
+                {
+                    "id": question["id"],
+                    "evaluation": evaluation,
+                    "score": score,
+                    "feedback": feedback,
+                    "reference_answer": (
+                        f"A strong answer should discuss {file_hint} and how "
+                        f"it fits the feature shown in the evidence."
+                        f"{commit_hint}"
+                    ),
+                    "evidence_used": [str(f) for f in files[:5]],
+                }
+            )
+
+        scores = [
+            item["score"]
+            for item in final_evaluations
+            if item["evaluation"] != "INSUFFICIENT_EVIDENCE"
+        ]
+        overall_score = round(sum(scores) / len(scores)) if scores else 0
+        overall_level = (
+            "HIGH" if overall_score >= 80
+            else "MEDIUM" if overall_score >= 60
+            else "LOW"
+        )
+        return {
+            "member_id": member_id,
+            "member": member_name,
+            "questions": final_evaluations,
+            "overall_score": overall_score,
+            "overall_level": overall_level,
+            "overall_summary": (
+                "Deterministic fallback evaluation was used because the LLM "
+                f"response could not be parsed as JSON. ({clip(error, 200)})"
+            ),
+            "strengths": [],
+            "areas_to_improve": [
+                "Answer with concrete file paths, commit messages and PR "
+                "titles from the evidence shown with each question."
+            ],
+            "advice": (
+                "Ground every answer in the specific repository evidence "
+                "(file paths, commit messages, PR titles). Avoid generic "
+                "statements that do not name the project files."
+            ),
+            "status": "deterministic_fallback",
+            "model": None,
+        }
+
+    async def evaluate_understanding_answers(
+        self,
+        member: dict[str, Any],
+        questions: list[dict[str, Any]],
+        answers: dict[str, str],
+        evidence: dict[str, Any],
+    ) -> dict[str, Any]:
         member_id = member.get("member_id")
         try:
             member_id = int(member_id)
@@ -859,105 +1199,285 @@ class LLMService:
             raise LLMAPIError(f"No evidence found for member {member_id}.")
 
         details = member_evidence.get("details") or {}
-        compact_evidence = {
-            "member": {"member_id": member_id, "name": member_evidence.get("display_name"), "github_username": member_evidence.get("github_username"), "evidence_status": member_evidence.get("evidence_status")},
-            "files": details.get("files") or {},
-            "commits": [{"sha": clip(c.get("sha"), 12), "message": c.get("message", "")[:500], "branch": clip(c.get("branch_name"), 100), "files": (c.get("files") or [])[:10], "changed_file_count": c.get("changed_file_count")} for c in (details.get("commits") or [])[:20]],
-            "pull_requests": [{"number": pr.get("number"), "title": clip(pr.get("title"), 160), "files": (pr.get("files") or [])[:10], "merged": bool(pr.get("merged"))} for pr in (details.get("pull_requests") or [])[:10]],
-        }
+        commits_all = [
+            c for c in (details.get("commits") or []) if isinstance(c, dict)
+        ]
+        prs_all = [
+            pr for pr in (details.get("pull_requests") or []) if isinstance(pr, dict)
+        ]
 
-        questionnaire = []
+        def commits_for_files(file_list: list[str]) -> list[dict[str, Any]]:
+            wanted = {str(f).replace("\\", "/") for f in file_list if f}
+            if not wanted:
+                return []
+            matched: list[dict[str, Any]] = []
+            for c in commits_all:
+                c_files = [
+                    str(f).replace("\\", "/")
+                    for f in (c.get("files") or [])
+                    if isinstance(f, str)
+                ]
+                if any(
+                    any(w in cf or cf.endswith(w.split("/")[-1]) for w in wanted)
+                    for cf in c_files
+                ):
+                    matched.append(
+                        {
+                            "sha": clip(c.get("sha"), 12),
+                            "message": clip(c.get("message"), 180),
+                            "files": c_files[:6],
+                        }
+                    )
+                if len(matched) >= 5:
+                    break
+            return matched
+
+        def prs_for_files(file_list: list[str]) -> list[dict[str, Any]]:
+            wanted = {str(f).replace("\\", "/") for f in file_list if f}
+            if not wanted:
+                return []
+            matched: list[dict[str, Any]] = []
+            for pr in prs_all:
+                pr_files: list[str] = []
+                for f in pr.get("files") or []:
+                    if isinstance(f, str):
+                        pr_files.append(f.replace("\\", "/"))
+                    elif isinstance(f, dict) and (
+                        f.get("filename") or f.get("path")
+                    ):
+                        pr_files.append(
+                            str(f.get("filename") or f.get("path")).replace(
+                                "\\", "/"
+                            )
+                        )
+                if any(
+                    any(w in pf or pf.endswith(w.split("/")[-1]) for w in wanted)
+                    for pf in pr_files
+                ):
+                    matched.append(
+                        {
+                            "number": pr.get("number"),
+                            "title": clip(pr.get("title"), 140),
+                            "merged": bool(pr.get("merged")),
+                            "files": pr_files[:6],
+                        }
+                    )
+                if len(matched) >= 4:
+                    break
+            return matched
+
+        questionnaire: list[dict[str, Any]] = []
         for question in questions:
             if not isinstance(question, dict):
                 continue
             question_id = str(question.get("id") or "").strip()
             if not question_id:
                 continue
-            questionnaire.append({
-                "id": question_id, "question": clip(question.get("question"), 600), "difficulty": question.get("difficulty", "MEDIUM"),
-                "evidence": question.get("evidence") or {}, "answer": clip(answers.get(question_id, ""), 2500),
-            })
+
+            q_evidence = question.get("evidence") or {}
+            q_files: list[str] = []
+            for key in ("files", "file", "paths"):
+                val = q_evidence.get(key)
+                if isinstance(val, list):
+                    q_files.extend(str(x) for x in val if x)
+                elif isinstance(val, str) and val.strip():
+                    q_files.append(val.strip())
+            q_files = list(dict.fromkeys(q_files))[:8]
+
+            questionnaire.append(
+                {
+                    "id": question_id,
+                    "question": clip(question.get("question"), 400),
+                    "difficulty": question.get("difficulty", "MEDIUM"),
+                    "answer": clip(answers.get(question_id, ""), 1200),
+                    "evidence": {
+                        "files": q_files,
+                        "commit_shas": (q_evidence.get("commit_shas") or [])[:5],
+                        "pr_numbers": (q_evidence.get("pr_numbers") or [])[:5],
+                        "task": clip(q_evidence.get("task"), 120),
+                        "related_commits": commits_for_files(q_files),
+                        "related_pull_requests": prs_for_files(q_files),
+                    },
+                }
+            )
 
         if not questionnaire:
             raise LLMAPIError("No valid questions were supplied.")
 
         user_prompt = (
             "Evaluate this student's Proof of Understanding answers.\n\n"
-            "The goal is NOT to determine whether the student contributed to the project. GitHub evidence already describes observable activity.\n"
-            "The goal is to determine whether the student's answers demonstrate understanding of the work referenced by each question.\n\n"
+            "Goal: judge whether each answer shows understanding of the work "
+            "referenced by that question's evidence. GitHub activity alone is "
+            "not understanding.\n\n"
             "RULES:\n"
-            "1. Evaluate each answer against the supplied evidence.\n"
-            "2. Do not reward an answer for sounding confident.\n"
-            "3. Do not require wording identical to the implementation.\n"
-            "4. A technically correct answer supported by the evidence should score well.\n"
-            "5. A partially correct answer should receive PARTIAL.\n"
-            "6. An incorrect answer should receive INCORRECT.\n"
-            "7. If the evidence is insufficient to judge a technical claim, say so instead of inventing information.\n"
-            "8. Do not infer cheating or dishonesty.\n"
-            "9. Explain briefly why the answer received its evaluation.\n"
-            "10. The overall score must reflect understanding demonstrated by the answers, not the amount of GitHub activity.\n"
-            "11. AFTER evaluating all answers, provide SPECIFIC ARCHITECTURAL OR METHODOLOGICAL ADVICE based on:\n"
-            "    - What the student understood well vs. gaps in their understanding\n"
-            "    - The actual code changes they made (commits, files, PRs)\n"
-            "    - How their work could be improved architecturally or methodologically\n"
-            "    - This advice must be grounded in the EVIDENCE, not generic suggestions\n"
-            "    - Format advice as actionable recommendations, not criticism\n\n"
-            "Evaluation levels:\n"
-            "CORRECT = demonstrates strong understanding.\n"
-            "PARTIAL = demonstrates some understanding but has important gaps.\n"
-            "INCORRECT = answer conflicts with or does not demonstrate the relevant evidence.\n"
-            "INSUFFICIENT_EVIDENCE = the repository evidence does not allow a reliable evaluation.\n\n"
-            + json.dumps({"evidence": compact_evidence, "questionnaire": questionnaire}, ensure_ascii=False, default=str)
-            + "\n\nReturn exactly:\n{\"questions\":[{\"id\":\"q1\",\"evaluation\":\"CORRECT|PARTIAL|INCORRECT|INSUFFICIENT_EVIDENCE\",\"score\":0,\"feedback\":\"\",\"evidence_used\":[]}],\"overall_summary\":\"\",\"overall_level\":\"LOW|MEDIUM|HIGH\",\"overall_score\":0,\"strengths\":[],\"areas_to_improve\":[],\"advice\":\"SPECIFIC ARCHITECTURAL/METHODOLOGICAL ADVICE BASED ON EVIDENCE AND UNDERSTANDING GAPS\"}"
+            "1. Evaluate each answer only against that question's evidence "
+            "(files, related_commits, related_pull_requests).\n"
+            "2. Do not reward confidence. Do not invent file contents or diffs.\n"
+            "3. Score ranges MUST match labels:\n"
+            "   CORRECT 80-100 | PARTIAL 40-79 | INCORRECT 0-39 | "
+            "INSUFFICIENT_EVIDENCE 0-20.\n"
+            "   Never assign CORRECT with a score below 80.\n"
+            "4. reference_answer must be specific and evidence-based:\n"
+            "   - Name the file(s) from evidence.files\n"
+            "   - Quote or paraphrase related_commits[].message when present\n"
+            "   - Mention related PR titles/numbers when present\n"
+            "   - Explain the role of the file in the feature "
+            "(form vs results vs model artifact) using only those signals\n"
+            "   - Do NOT invent HTML fields, CSS, or line-level edits "
+            "that are not in the evidence\n"
+            "5. feedback must say what was missing vs the evidence "
+            "(e.g. ignored commit message X, wrong file).\n"
+            "6. advice must cite concrete paths and commit messages from the "
+            "evidence, not generic study tips.\n"
+            "7. overall_score = average of the per-question scores.\n\n"
+            + json.dumps(
+                {
+                    "member": {
+                        "member_id": member_id,
+                        "name": member_evidence.get("display_name"),
+                        "github_username": member_evidence.get(
+                            "github_username"
+                        ),
+                    },
+                    "questionnaire": questionnaire,
+                },
+                ensure_ascii=False,
+                default=str,
+            )
+            + "\n\nReturn ONE JSON object only (no markdown):\n"
+            '{"questions":[{"id":"q1","evaluation":"CORRECT|PARTIAL|INCORRECT|INSUFFICIENT_EVIDENCE",'
+            '"score":0,"feedback":"","reference_answer":"","evidence_used":[]}],'
+            '"overall_summary":"","overall_level":"LOW|MEDIUM|HIGH","overall_score":0,'
+            '"strengths":[],"areas_to_improve":[],"advice":""}'
         )
 
-        data = await self._ask_json(BASE_RULES, user_prompt, 4500)
+        try:
+            data = await self._ask_json(BASE_RULES, user_prompt, 3500)
+        except LLMAPIError as exc:
+            return self._fallback_evaluation(
+                member_id=member_id,
+                member_name=member_evidence.get("display_name"),
+                questionnaire=questionnaire,
+                error=str(exc),
+            )
+
         raw_results = data.get("questions")
         if not isinstance(raw_results, list):
-            raise LLMAPIError("The LLM returned an invalid evaluation structure.")
+            return self._fallback_evaluation(
+                member_id=member_id,
+                member_name=member_evidence.get("display_name"),
+                questionnaire=questionnaire,
+                error="invalid evaluation structure",
+            )
 
-        valid_question_ids = {str(question["id"]) for question in questionnaire}
-        evaluations = []
+        valid_question_ids = {str(q["id"]) for q in questionnaire}
+        evaluations: list[dict[str, Any]] = []
         for item in raw_results:
             if not isinstance(item, dict):
                 continue
             question_id = str(item.get("id") or "").strip()
             if question_id not in valid_question_ids:
                 continue
-            evaluation = str(item.get("evaluation") or "INSUFFICIENT_EVIDENCE").upper()
-            allowed = {"CORRECT", "PARTIAL", "INCORRECT", "INSUFFICIENT_EVIDENCE"}
+
+            evaluation = str(
+                item.get("evaluation") or "INSUFFICIENT_EVIDENCE"
+            ).upper()
+            allowed = {
+                "CORRECT",
+                "PARTIAL",
+                "INCORRECT",
+                "INSUFFICIENT_EVIDENCE",
+            }
             if evaluation not in allowed:
                 evaluation = "INSUFFICIENT_EVIDENCE"
+
             try:
                 score = int(item.get("score", 0))
             except (TypeError, ValueError):
                 score = 0
             score = max(0, min(100, score))
-            evaluations.append({
-                "id": question_id, "evaluation": evaluation, "score": score,
-                "feedback": clip(item.get("feedback"), 700),
-                "evidence_used": [clip(value, 200) for value in (item.get("evidence_used") or [])[:5] if isinstance(value, str)],
-            })
+
+            if evaluation == "CORRECT" and score < 80:
+                score = 85 if score < 50 else max(score, 80)
+            elif evaluation == "PARTIAL":
+                if score < 40:
+                    score = 55
+                elif score > 79:
+                    score = 75
+            elif evaluation == "INCORRECT" and score > 39:
+                score = 25
+            elif evaluation == "INSUFFICIENT_EVIDENCE" and score > 20:
+                score = 10
+
+            evaluations.append(
+                {
+                    "id": question_id,
+                    "evaluation": evaluation,
+                    "score": score,
+                    "feedback": clip(item.get("feedback"), 700),
+                    "reference_answer": clip(
+                        item.get("reference_answer")
+                        or item.get("model_answer")
+                        or item.get("correct_answer")
+                        or "",
+                        800,
+                    ),
+                    "evidence_used": [
+                        clip(value, 200)
+                        for value in (item.get("evidence_used") or [])[:5]
+                        if isinstance(value, str)
+                    ],
+                }
+            )
 
         evaluation_by_id = {item["id"]: item for item in evaluations}
-        final_evaluations = []
+        final_evaluations: list[dict[str, Any]] = []
         for question in questionnaire:
             question_id = question["id"]
             result = evaluation_by_id.get(question_id)
             if result is None:
-                result = {"id": question_id, "evaluation": "INSUFFICIENT_EVIDENCE", "score": 0, "feedback": "No reliable evaluation was returned for this answer.", "evidence_used": []}
+                result = {
+                    "id": question_id,
+                    "evaluation": "INSUFFICIENT_EVIDENCE",
+                    "score": 0,
+                    "feedback": (
+                        "No reliable evaluation was returned for this answer."
+                    ),
+                    "reference_answer": "",
+                    "evidence_used": [],
+                }
             final_evaluations.append(result)
 
-        scores = [item["score"] for item in final_evaluations if item["evaluation"] != "INSUFFICIENT_EVIDENCE"]
+        scores = [
+            item["score"]
+            for item in final_evaluations
+            if item["evaluation"] != "INSUFFICIENT_EVIDENCE"
+        ]
         overall_score = round(sum(scores) / len(scores)) if scores else 0
-        overall_level = "HIGH" if overall_score >= 80 else "MEDIUM" if overall_score >= 60 else "LOW"
+        overall_level = (
+            "HIGH" if overall_score >= 80
+            else "MEDIUM" if overall_score >= 60
+            else "LOW"
+        )
 
         return {
-            "member_id": member_id, "member": member_evidence.get("display_name"), "questions": final_evaluations,
-            "overall_score": overall_score, "overall_level": overall_level,
+            "member_id": member_id,
+            "member": member_evidence.get("display_name"),
+            "questions": final_evaluations,
+            "overall_score": overall_score,
+            "overall_level": overall_level,
             "overall_summary": clip(data.get("overall_summary"), 1200),
-            "strengths": [clip(value, 300) for value in (data.get("strengths") or [])[:8] if isinstance(value, str)],
-            "areas_to_improve": [clip(value, 300) for value in (data.get("areas_to_improve") or [])[:8] if isinstance(value, str)],
-            "advice": clip(data.get("advice", ""), 1500),  # NEW FIELD: Specific advice based on evidence
-            "status": "llm", "model": self.model,
+            "strengths": [
+                clip(value, 300)
+                for value in (data.get("strengths") or [])[:8]
+                if isinstance(value, str)
+            ],
+            "areas_to_improve": [
+                clip(value, 300)
+                for value in (data.get("areas_to_improve") or [])[:8]
+                if isinstance(value, str)
+            ],
+            "advice": clip(data.get("advice", ""), 1500),
+            "status": "llm",
+            "model": self.model,
         }

@@ -17,7 +17,7 @@ from app.services.evidence import EvidenceEngine
 from app.services.github import GitHubAPIError, GitHubService
 from app.services.timeline import TimelineService
 
-
+from app.services.contribution import calculate_member_contributions
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects",tags=["Projects"])
@@ -1489,8 +1489,6 @@ def get_evidence_graph(
 
  
 # TASK EVIDENCE
- 
-
 
 @router.get(
     "/{project_id}/tasks/{task_id}/evidence"
@@ -1602,9 +1600,6 @@ def get_task_evidence(
 
  
 # TIMELINE
- 
-
-
 @router.get(
     "/{project_id}/timeline"
 )
@@ -1671,4 +1666,14 @@ def get_member_timeline(
             min(limit, 1000),
         ),
     )
-    
+
+# Route for Contribution 
+@router.get("/{project_id}/contributions")
+def get_contributions(project_id: int, db: Session = Depends(get_db)):
+    project = _get_project_or_404(db, project_id)
+    record = _latest_analysis(db, project_id)
+    if record is None:
+        raise HTTPException(404, "Project not analyzed yet.")
+    analysis = record.analysis_json or {}
+    members = analysis.get("member_analysis") or []
+    return calculate_member_contributions(members)
