@@ -25,3 +25,5 @@ dist/
 # Logs
 *.log
 
+# video 
+*.mp4
