@@ -600,6 +600,13 @@ When contributing, please preserve the core principles:
 
 Before submitting a pull request, explain the purpose of the change and how it was tested.
 
+### Current Limitations and Future Improvements
+
+The current version of ProofLine is being tested primarily with relatively small GitHub repositories. To keep API requests manageable, some endpoints use fixed limits on the number of commits, pull requests, and related activities retrieved for analysis.
+
+For repositories with many contributors, commits, or pull requests, these limits may cause the analysis to be incomplete and affect the accuracy of contribution evidence and task-matching results.
+
+This version is an initial step toward the broader goal of analyzing real-world collaborative projects. Future development will focus on improving support for larger repositories, handling pagination more effectively, and making the analysis more scalable and reliable.
 
 ## Disclaimer
 
