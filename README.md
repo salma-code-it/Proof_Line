@@ -602,11 +602,23 @@ Before submitting a pull request, explain the purpose of the change and how it w
 
 ### Current Limitations and Future Improvements
 
-The current version of ProofLine is being tested primarily with relatively small GitHub repositories. To keep API requests manageable, some endpoints use fixed limits on the number of commits, pull requests, and related activities retrieved for analysis.
+The current version of **ProofLine** is being tested primarily with relatively small GitHub repositories. To keep API requests and processing manageable, some endpoints use fixed limits on the number of commits, pull requests, and related activities retrieved during analysis.
 
-For repositories with many contributors, commits, or pull requests, these limits may cause the analysis to be incomplete and affect the accuracy of contribution evidence and task-matching results.
+For larger repositories with many contributors, commits, pull requests, and files, these limits may result in incomplete evidence and affect the accuracy of contribution analysis and task-matching results. The current version also focuses mainly on GitHub activity metadata, such as commits, pull requests, changed-file information, and reviews. It does not yet deeply analyze the actual source code to understand the logic, purpose, and technical significance of each change.
 
-This version is an initial step toward the broader goal of analyzing real-world collaborative projects. Future development will focus on improving support for larger repositories, handling pagination more effectively, and making the analysis more scalable and reliable.
+Future development will focus on making ProofLine more scalable, reliable, and capable of analyzing complex, real-world collaborative projects. Planned improvements include:
+
+* **Scalable data collection:** Implement more robust pagination, incremental data collection, rate-limit handling, and retry mechanisms to retrieve repository information more completely.
+* **Asynchronous and background processing:** Use background job queues and technologies such as **Redis and Celery or RQ** to handle long-running analyses without blocking the frontend or requiring a single HTTP request to remain open for several minutes.
+* **Large-repository support:** Introduce caching, parallel processing with controlled concurrency, and incremental analysis to reduce repeated API calls and improve performance.
+* **Deeper code understanding:** Extend the analysis beyond activity metadata to inspect source-code changes, diffs, functions, classes, tests, and documentation. This would help ProofLine better understand what was changed, why it matters, and how the changes relate to assigned tasks.
+* **More reliable task matching:** Combine task descriptions, changed files, code-level evidence, reviews, and project context to improve the connection between each member's assigned work and their actual contributions.
+* **More comprehensive evidence:** Incorporate additional signals, such as issues, CI/CD results, branch activity, and review discussions, while avoiding double-counting related events.
+
+These improvements are planned future work rather than capabilities fully implemented in the current version. The long-term goal is to evolve ProofLine from a GitHub activity analyzer into a scalable, evidence-based system that can better understand both **the work recorded in a repository and the code behind that work**.
+
+ProofLine will continue to present evidence transparently rather than claiming an exact contribution percentage, since GitHub activity alone cannot capture every aspect of teamwork, including offline work and contributions that are not reflected in repository history.
+
 
 ## Disclaimer
 
