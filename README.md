@@ -2,16 +2,18 @@
 
 **Turning Student Team GitHub Activity into Transparent Contribution Evidence and Proof of Understanding**
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.10+" />
-  <img src="https://img.shields.io/badge/FastAPI-0.142-009688?style=for-the-badge&logo=fastapi&logoColor=white" alt="FastAPI" />
-  <img src="https://img.shields.io/badge/SQLAlchemy-2.1-D71F00?style=for-the-badge&logo=sqlalchemy&logoColor=white" alt="SQLAlchemy" />
-  <img src="https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge&logo=react&logoColor=black" alt="React" />
-  <img src="https://img.shields.io/badge/Vite-8-646CFF?style=for-the-badge&logo=vite&logoColor=white" alt="Vite" />
-  <img src="https://img.shields.io/badge/Tailwind_CSS-4-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white" alt="Tailwind CSS" />
-  <img src="https://img.shields.io/badge/OpenRouter-LLM-412991?style=for-the-badge" alt="OpenRouter" />
-  <img src="https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white" alt="SQLite" />
-</p>
+<div align="center">
+
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-Framework-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-ORM-D71F00?style=for-the-badge&logo=sqlalchemy&logoColor=white)](https://docs.sqlalchemy.org/)
+[![React](https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev/)
+[![Vite](https://img.shields.io/badge/Vite-8-646CFF?style=for-the-badge&logo=vite&logoColor=white)](https://vite.dev/)
+[![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-4-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/docs)
+[![OpenRouter](https://img.shields.io/badge/OpenRouter-LLM-412991?style=for-the-badge)](https://openrouter.ai/docs)
+[![SQLite](https://img.shields.io/badge/SQLite-Database-003B57?style=for-the-badge&logo=sqlite&logoColor=white)](https://www.sqlite.org/docs.html)
+
+</div>
 
 ProofLine analyzes observable GitHub activity to help instructors review student team projects. It combines deterministic evidence collection with optional LLM-assisted explanations and evidence-grounded checks of student understanding.
 
@@ -26,7 +28,6 @@ ProofLine analyzes observable GitHub activity to help instructors review student
 - [Technology Stack](#technology-stack)
 - [How It Works](#how-it-works-end-to-end)
 - [The LLM Layer](#the-llm-layer-openrouter)
-- [Project Structure](#project-structure)
 - [Backend Setup and Run](#backend-setup-and-run)
 - [Frontend Setup and Run](#frontend-setup-and-run)
 - [API Reference](#api-reference)
@@ -35,7 +36,6 @@ ProofLine analyzes observable GitHub activity to help instructors review student
 - [Privacy and Responsible Use](#privacy-and-responsible-use)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
-- [License](#license)
 - [Disclaimer](#disclaimer)
 
 ---
@@ -64,14 +64,14 @@ GitHub provides commits, pull requests, reviews, comments, file changes, issues,
 
 ### Why simple metrics can mislead
 
-| Naive metric | Why it can be misleading |
-|---|---|
-| Total commit count | Many tiny commits can outnumber fewer substantial changes. |
-| Lines added | Added and deleted lines do not directly measure effort or value. |
-| Last person to edit a file | A small correction does not establish ownership of the whole file. |
-| Contribution percentage | Git activity alone cannot establish a reliable real-world contribution percentage. |
-| Activity equals effort | Planning, debugging, pair programming, and offline work may not appear in the repository. |
-| File touched equals understanding | A changed file does not prove that the person understands its implementation. |
+| Naive metric                      | Why it can be misleading                                                                  |
+| --------------------------------- | ----------------------------------------------------------------------------------------- |
+| Total commit count                | Many tiny commits can outnumber fewer substantial changes.                                |
+| Lines added                       | Added and deleted lines do not directly measure effort or value.                          |
+| Last person to edit a file        | A small correction does not establish ownership of the whole file.                        |
+| Contribution percentage           | Git activity alone cannot establish a reliable real-world contribution percentage.        |
+| Activity equals effort            | Planning, debugging, pair programming, and offline work may not appear in the repository. |
+| File touched equals understanding | A changed file does not prove that the person understands its implementation.             |
 
 GitHub Classroom helps distribute assignments and collect repositories, but instructors may still need to interpret repository activity manually.
 
@@ -144,11 +144,10 @@ ProofLine distinguishes observation from interpretation:
 
 ## Screenshots
 
-Add actual screenshots to `docs/screenshots/` and update the paths below. These are suggested screenshot slots, not images included in this repository.
+Add actual screenshots to `screenshots/` and update the paths below. These are suggested screenshot slots, not images included in this repository.
 
 ```text
-docs/
-└── screenshots/
+screenshots/
     ├── 01-landing.png
     ├── 02-create-project.png
     ├── 03-dashboard.png
@@ -161,9 +160,8 @@ docs/
 
 Example Markdown:
 
-```md
-![ProofLine project dashboard](docs/screenshots/03-dashboard.png)
-```
+![ProofLine project dashboard](screenshots/03-dashboard.png)  
+
 
 ## Technology Stack
 
@@ -171,37 +169,37 @@ Documentation links below open the official documentation for each technology.
 
 ### Backend
 
-| Layer | Technology | Documentation |
-|---|---|---|
-| Language | Python 3.10+ | [Python documentation](https://docs.python.org/3/) |
-| Web framework | FastAPI | [FastAPI documentation](https://fastapi.tiangolo.com/) |
-| ASGI server | Uvicorn | [Uvicorn documentation](https://www.uvicorn.org/) |
-| ORM | SQLAlchemy | [SQLAlchemy documentation](https://docs.sqlalchemy.org/) |
-| Data validation and settings | Pydantic | [Pydantic documentation](https://docs.pydantic.dev/latest/) |
-| Settings management | pydantic-settings | [pydantic-settings documentation](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) |
-| Database | SQLite | [SQLite documentation](https://www.sqlite.org/docs.html) |
-| Async HTTP client | HTTPX | [HTTPX documentation](https://www.python-httpx.org/) |
-| API documentation | OpenAPI / Swagger UI | [FastAPI interactive docs](https://fastapi.tiangolo.com/features/#automatic-docs) |
+| Layer                        | Technology           | Documentation                                                                                   |
+| ---------------------------- | -------------------- | ----------------------------------------------------------------------------------------------- |
+| Language                     | Python 3.10+         | [Python documentation](https://docs.python.org/3/)                                              |
+| Web framework                | FastAPI              | [FastAPI documentation](https://fastapi.tiangolo.com/)                                          |
+| ASGI server                  | Uvicorn              | [Uvicorn documentation](https://www.uvicorn.org/)                                               |
+| ORM                          | SQLAlchemy           | [SQLAlchemy documentation](https://docs.sqlalchemy.org/)                                        |
+| Data validation and settings | Pydantic             | [Pydantic documentation](https://docs.pydantic.dev/latest/)                                     |
+| Settings management          | pydantic-settings    | [pydantic-settings documentation](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) |
+| Database                     | SQLite               | [SQLite documentation](https://www.sqlite.org/docs.html)                                        |
+| Async HTTP client            | HTTPX                | [HTTPX documentation](https://www.python-httpx.org/)                                            |
+| API documentation            | OpenAPI / Swagger UI | [FastAPI interactive docs](https://fastapi.tiangolo.com/features/#automatic-docs)               |
 
 ### Frontend
 
-| Layer | Technology | Documentation |
-|---|---|---|
-| UI library | React | [React documentation](https://react.dev/) |
-| Build tool and development server | Vite | [Vite documentation](https://vite.dev/guide/) |
-| Routing | React Router | [React Router documentation](https://reactrouter.com/) |
-| HTTP client | Axios | [Axios documentation](https://axios-http.com/docs/intro) |
-| Styling | Tailwind CSS | [Tailwind CSS documentation](https://tailwindcss.com/docs) |
-| Icons | Lucide React | [Lucide React documentation](https://lucide.dev/guide/packages/lucide-react) |
-| Charts | Recharts | [Recharts documentation](https://recharts.org/en-US/guide) |
-| Linting | Oxlint | [Oxlint documentation](https://oxc.rs/docs/guide/usage/linter.html) |
+| Layer                             | Technology   | Documentation                                                                |
+| --------------------------------- | ------------ | ---------------------------------------------------------------------------- |
+| UI library                        | React        | [React documentation](https://react.dev/)                                    |
+| Build tool and development server | Vite         | [Vite documentation](https://vite.dev/guide/)                                |
+| Routing                           | React Router | [React Router documentation](https://reactrouter.com/)                       |
+| HTTP client                       | Axios        | [Axios documentation](https://axios-http.com/docs/intro)                     |
+| Styling                           | Tailwind CSS | [Tailwind CSS documentation](https://tailwindcss.com/docs)                   |
+| Icons                             | Lucide React | [Lucide React documentation](https://lucide.dev/guide/packages/lucide-react) |
+| Charts                            | Recharts     | [Recharts documentation](https://recharts.org/en-US/guide)                   |
+| Linting                           | Oxlint       | [Oxlint documentation](https://oxc.rs/docs/guide/usage/linter.html)          |
 
 ### External services
 
-| Service | Purpose | Documentation |
-|---|---|---|
-| GitHub REST API | Repository and collaboration evidence | [GitHub REST API documentation](https://docs.github.com/en/rest) |
-| OpenRouter | Access to supported LLMs through one API | [OpenRouter documentation](https://openrouter.ai/docs) |
+| Service         | Purpose                                  | Documentation                                                    |
+| --------------- | ---------------------------------------- | ---------------------------------------------------------------- |
+| GitHub REST API | Repository and collaboration evidence    | [GitHub REST API documentation](https://docs.github.com/en/rest) |
+| OpenRouter      | Access to supported LLMs through one API | [OpenRouter documentation](https://openrouter.ai/docs)           |
 
 > **Version note:** The versions shown in the project badges and dependency files may change. The installed dependency files are the source of truth for the versions used in a particular checkout.
 
@@ -266,13 +264,12 @@ ProofLine uses OpenRouter to access supported language models through an OpenAI-
 Official documentation: [OpenRouter API quickstart](https://openrouter.ai/docs/quickstart).
 
 ### LLM responsibilities
-
-| Role | Endpoint | Purpose |
-|---|---|---|
-| Task generation | `/llm/projects/{id}/tasks/generate` | Propose candidate tasks and file patterns |
-| Task matching | `/llm/projects/{id}/tasks/match` | Interpret deterministic member–task candidates |
-| Final explanation | `/llm/projects/{id}/explain` | Produce a readable explanation of the analysis |
-| Understanding check | `/llm/projects/{id}/members/{mid}/understanding/...` | Generate questions and evaluate answers |
+| Role                | Endpoint                                             | Purpose                                        |
+| ------------------- | ---------------------------------------------------- | ---------------------------------------------- |
+| Task generation     | `/llm/projects/{id}/tasks/generate`                  | Propose candidate tasks and file patterns      |
+| Task matching       | `/llm/projects/{id}/tasks/match`                     | Interpret deterministic member–task candidates |
+| Final explanation   | `/llm/projects/{id}/explain`                         | Produce a readable explanation of the analysis |
+| Understanding check | `/llm/projects/{id}/members/{mid}/understanding/...` | Generate questions and evaluate answers        |
 
 ### Prompt and evidence safeguards
 
@@ -292,35 +289,6 @@ The LLM layer is intended to follow these rules:
 
 LLM responses can be malformed, incomplete, or unavailable. The backend may attempt to parse or repair structured output, retry eligible failures, reduce payload size, or use deterministic fallbacks where implemented. These fallbacks improve availability but do not make an LLM-generated result equivalent to a human assessment.
 
-## Project Structure
-
-The exact structure can differ between branches. The following is a **conceptual guide** to the main backend and frontend areas; adjust it to match the repository's actual files before publishing.
-
-```text
-proofline/
-├── app/
-│   ├── main.py
-│   ├── api/
-│   ├── models/
-│   ├── schemas/
-│   ├── services/
-│   └── core/
-├── frontend/
-│   ├── src/
-│   │   ├── components/
-│   │   ├── pages/
-│   │   ├── services/
-│   │   └── ...
-│   ├── package.json
-│   └── vite.config.js
-├── docs/
-│   └── screenshots/
-├── .env.example
-├── requirements.txt
-├── README.md
-└── LICENSE
-```
-
 ## Backend Setup and Run
 
 ### Prerequisites
@@ -336,7 +304,7 @@ proofline/
 Replace the placeholder with the actual repository URL:
 
 ```bash
-git clone <your-repository-url>
+git clone https://github.com/salma-code-it/Proof_Line.git
 cd proofline
 ```
 
@@ -345,21 +313,21 @@ cd proofline
 **Windows PowerShell:**
 
 ```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
+py -m venv venv
+.\venv\Scripts\Activate.ps1
 ```
 
 **Windows Command Prompt:**
 
 ```bat
-py -m venv .venv
-.venv\Scripts\activate.bat
+py -m venv venv
+venv\Scripts\activate.bat
 ```
 
 **Linux / macOS:**
 
 ```bash
-python3 -m venv .venv
+python3 -m venv venv
 source .venv/bin/activate
 ```
 
@@ -632,13 +600,13 @@ When contributing, please preserve the core principles:
 
 Before submitting a pull request, explain the purpose of the change and how it was tested.
 
-## License
+### Current Limitations and Future Improvements
 
-This project is intended to be released under the **MIT License**. Add a `LICENSE` file to the repository with the complete MIT License text and the correct copyright holder and year before distributing the project.
+The current version of ProofLine is being tested primarily with relatively small GitHub repositories. To keep API requests manageable, some endpoints use fixed limits on the number of commits, pull requests, and related activities retrieved for analysis.
 
-The MIT License permits use, copying, modification, distribution, sublicensing, and sale of copies, subject to its terms. It also includes the standard copyright and permission notice requirements and warranty/liability disclaimer.
+For repositories with many contributors, commits, or pull requests, these limits may cause the analysis to be incomplete and affect the accuracy of contribution evidence and task-matching results.
 
-For the official license text, see [The MIT License — Open Source Initiative](https://opensource.org/license/mit).
+This version is an initial step toward the broader goal of analyzing real-world collaborative projects. Future development will focus on improving support for larger repositories, handling pagination more effectively, and making the analysis more scalable and reliable.
 
 ## Disclaimer
 
