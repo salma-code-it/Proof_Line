@@ -63,16 +63,16 @@ Consider a professor evaluating a group project with four students working in th
 GitHub provides commits, pull requests, reviews, comments, file changes, issues, and workflow activity. It does not automatically turn those records into a careful, contextual explanation.
 
 ### Why simple metrics can mislead
-```
-| Naive metric | Why it can be misleading |
-|---|---|
-| Total commit count | Many tiny commits can outnumber fewer substantial changes. |
-| Lines added | Added and deleted lines do not directly measure effort or value. |
-| Last person to edit a file | A small correction does not establish ownership of the whole file. |
-| Contribution percentage | Git activity alone cannot establish a reliable real-world contribution percentage. |
-| Activity equals effort | Planning, debugging, pair programming, and offline work may not appear in the repository. |
-| File touched equals understanding | A changed file does not prove that the person understands its implementation. |
-```
+
+| Naive metric                      | Why it can be misleading                                                                  |
+| --------------------------------- | ----------------------------------------------------------------------------------------- |
+| Total commit count                | Many tiny commits can outnumber fewer substantial changes.                                |
+| Lines added                       | Added and deleted lines do not directly measure effort or value.                          |
+| Last person to edit a file        | A small correction does not establish ownership of the whole file.                        |
+| Contribution percentage           | Git activity alone cannot establish a reliable real-world contribution percentage.        |
+| Activity equals effort            | Planning, debugging, pair programming, and offline work may not appear in the repository. |
+| File touched equals understanding | A changed file does not prove that the person understands its implementation.             |
+
 GitHub Classroom helps distribute assignments and collect repositories, but instructors may still need to interpret repository activity manually.
 
 ## How ProofLine Solves It
@@ -160,48 +160,47 @@ screenshots/
 
 Example Markdown:
 
-```md
 ![ProofLine project dashboard](screenshots/03-dashboard.png)  
-```
+
 
 ## Technology Stack
 
 Documentation links below open the official documentation for each technology.
 
 ### Backend
-```
-| Layer | Technology | Documentation |
-|---|---|---|
-| Language | Python 3.10+ | [Python documentation](https://docs.python.org/3/) |
-| Web framework | FastAPI | [FastAPI documentation](https://fastapi.tiangolo.com/) |
-| ASGI server | Uvicorn | [Uvicorn documentation](https://www.uvicorn.org/) |
-| ORM | SQLAlchemy | [SQLAlchemy documentation](https://docs.sqlalchemy.org/) |
-| Data validation and settings | Pydantic | [Pydantic documentation](https://docs.pydantic.dev/latest/) |
-| Settings management | pydantic-settings | [pydantic-settings documentation](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) |
-| Database | SQLite | [SQLite documentation](https://www.sqlite.org/docs.html) |
-| Async HTTP client | HTTPX | [HTTPX documentation](https://www.python-httpx.org/) |
-| API documentation | OpenAPI / Swagger UI | [FastAPI interactive docs](https://fastapi.tiangolo.com/features/#automatic-docs) |
-```
+
+| Layer                        | Technology           | Documentation                                                                                   |
+| ---------------------------- | -------------------- | ----------------------------------------------------------------------------------------------- |
+| Language                     | Python 3.10+         | [Python documentation](https://docs.python.org/3/)                                              |
+| Web framework                | FastAPI              | [FastAPI documentation](https://fastapi.tiangolo.com/)                                          |
+| ASGI server                  | Uvicorn              | [Uvicorn documentation](https://www.uvicorn.org/)                                               |
+| ORM                          | SQLAlchemy           | [SQLAlchemy documentation](https://docs.sqlalchemy.org/)                                        |
+| Data validation and settings | Pydantic             | [Pydantic documentation](https://docs.pydantic.dev/latest/)                                     |
+| Settings management          | pydantic-settings    | [pydantic-settings documentation](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) |
+| Database                     | SQLite               | [SQLite documentation](https://www.sqlite.org/docs.html)                                        |
+| Async HTTP client            | HTTPX                | [HTTPX documentation](https://www.python-httpx.org/)                                            |
+| API documentation            | OpenAPI / Swagger UI | [FastAPI interactive docs](https://fastapi.tiangolo.com/features/#automatic-docs)               |
+
 ### Frontend
-```
-| Layer | Technology | Documentation |
-|---|---|---|
-| UI library | React | [React documentation](https://react.dev/) |
-| Build tool and development server | Vite | [Vite documentation](https://vite.dev/guide/) |
-| Routing | React Router | [React Router documentation](https://reactrouter.com/) |
-| HTTP client | Axios | [Axios documentation](https://axios-http.com/docs/intro) |
-| Styling | Tailwind CSS | [Tailwind CSS documentation](https://tailwindcss.com/docs) |
-| Icons | Lucide React | [Lucide React documentation](https://lucide.dev/guide/packages/lucide-react) |
-| Charts | Recharts | [Recharts documentation](https://recharts.org/en-US/guide) |
-| Linting | Oxlint | [Oxlint documentation](https://oxc.rs/docs/guide/usage/linter.html) |
-```
+
+| Layer                             | Technology   | Documentation                                                                |
+| --------------------------------- | ------------ | ---------------------------------------------------------------------------- |
+| UI library                        | React        | [React documentation](https://react.dev/)                                    |
+| Build tool and development server | Vite         | [Vite documentation](https://vite.dev/guide/)                                |
+| Routing                           | React Router | [React Router documentation](https://reactrouter.com/)                       |
+| HTTP client                       | Axios        | [Axios documentation](https://axios-http.com/docs/intro)                     |
+| Styling                           | Tailwind CSS | [Tailwind CSS documentation](https://tailwindcss.com/docs)                   |
+| Icons                             | Lucide React | [Lucide React documentation](https://lucide.dev/guide/packages/lucide-react) |
+| Charts                            | Recharts     | [Recharts documentation](https://recharts.org/en-US/guide)                   |
+| Linting                           | Oxlint       | [Oxlint documentation](https://oxc.rs/docs/guide/usage/linter.html)          |
+
 ### External services
-```
-| Service | Purpose | Documentation |
-|---|---|---|
-| GitHub REST API | Repository and collaboration evidence | [GitHub REST API documentation](https://docs.github.com/en/rest) |
-| OpenRouter | Access to supported LLMs through one API | [OpenRouter documentation](https://openrouter.ai/docs) |
-```
+
+| Service         | Purpose                                  | Documentation                                                    |
+| --------------- | ---------------------------------------- | ---------------------------------------------------------------- |
+| GitHub REST API | Repository and collaboration evidence    | [GitHub REST API documentation](https://docs.github.com/en/rest) |
+| OpenRouter      | Access to supported LLMs through one API | [OpenRouter documentation](https://openrouter.ai/docs)           |
+
 > **Version note:** The versions shown in the project badges and dependency files may change. The installed dependency files are the source of truth for the versions used in a particular checkout.
 
 ## How It Works (End to End)
@@ -265,14 +264,13 @@ ProofLine uses OpenRouter to access supported language models through an OpenAI-
 Official documentation: [OpenRouter API quickstart](https://openrouter.ai/docs/quickstart).
 
 ### LLM responsibilities
-```
-| Role | Endpoint | Purpose |
-|---|---|---|
-| Task generation | `/llm/projects/{id}/tasks/generate` | Propose candidate tasks and file patterns |
-| Task matching | `/llm/projects/{id}/tasks/match` | Interpret deterministic member–task candidates |
-| Final explanation | `/llm/projects/{id}/explain` | Produce a readable explanation of the analysis |
-| Understanding check | `/llm/projects/{id}/members/{mid}/understanding/...` | Generate questions and evaluate answers |
-```
+| Role                | Endpoint                                             | Purpose                                        |
+| ------------------- | ---------------------------------------------------- | ---------------------------------------------- |
+| Task generation     | `/llm/projects/{id}/tasks/generate`                  | Propose candidate tasks and file patterns      |
+| Task matching       | `/llm/projects/{id}/tasks/match`                     | Interpret deterministic member–task candidates |
+| Final explanation   | `/llm/projects/{id}/explain`                         | Produce a readable explanation of the analysis |
+| Understanding check | `/llm/projects/{id}/members/{mid}/understanding/...` | Generate questions and evaluate answers        |
+
 ### Prompt and evidence safeguards
 
 The LLM layer is intended to follow these rules:
@@ -463,7 +461,7 @@ Open the frontend URL printed by Vite. If the frontend runs on a different origi
 The following table documents the endpoints described by the current project specification. Confirm request bodies, response schemas, and authentication requirements in Swagger UI at `/docs`, because those details depend on the implementation.
 
 ### Projects (`/projects`)
-```
+
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/projects` | Create a project with members and manually supplied tasks |
@@ -477,9 +475,9 @@ The following table documents the endpoints described by the current project spe
 | `GET` | `/projects/{id}/timeline?limit=200` | Get the project timeline |
 | `GET` | `/projects/{id}/members/{member_id}/timeline` | Get one member's timeline |
 | `GET` | `/projects/{id}/contributions` | Get observable activity indicators |
-```
+
 ### LLM (`/llm`)
-```
+
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/llm/projects/{id}/tasks/generate?regenerate=true` | Generate candidate tasks from repository evidence |
@@ -488,7 +486,7 @@ The following table documents the endpoints described by the current project spe
 | `POST` | `/llm/projects/{id}/run?regenerate_tasks=true` | Run task generation, matching, and explanation |
 | `POST` | `/llm/projects/{id}/members/{mid}/understanding/questions` | Create an understanding-check session and questions |
 | `POST` | `/llm/projects/{id}/members/{mid}/understanding/{sid}/evaluate` | Evaluate answers for an understanding-check session |
-```
+
 ### API documentation
 
 - [FastAPI Swagger UI](http://localhost:8000/docs) — interactive endpoint exploration and request testing.
