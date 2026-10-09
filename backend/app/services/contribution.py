@@ -22,15 +22,24 @@ def _log_scale(n: int | float, base: float = 10.0) -> float:
 def _member_branches(details: dict[str, Any]) -> list[str]:
     branches: list[str] = []
     seen: set[str] = set()
+
+    def _add(name: Any) -> None:
+        if not isinstance(name, str) or not name.strip():
+            return
+        key = name.strip().lower()
+        if key in seen:
+            return
+        seen.add(key)
+        branches.append(name.strip())
+
+    for name in details.get("branches") or []:
+        _add(name)
+
     for pr in details.get("pull_requests") or []:
         if not isinstance(pr, dict):
             continue
-        name = pr.get("branch") or pr.get("branch_name")
-        if isinstance(name, str) and name.strip():
-            key = name.strip().lower()
-            if key not in seen:
-                seen.add(key)
-                branches.append(name.strip())
+        _add(pr.get("branch") or pr.get("branch_name"))
+
     return branches
 
 

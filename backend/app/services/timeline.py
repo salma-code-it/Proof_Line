@@ -1017,7 +1017,9 @@ class TimelineService:
             if i["type"] == "REVIEW" and i["pr"] is not None
         )
 
-        # Work units: a PR (once) or a commit that is not part of a PR.
+        # Work units: a PR (once) or a commit that is not already part of a PR.
+        # _activity already excludes PR_COMMIT rows that share a SHA with a
+        # repository COMMIT (dup=True), so remaining PR_COMMITs are unique.
         units = []
 
         for item in self._activity:
@@ -1027,12 +1029,10 @@ class TimelineService:
             if item["type"] == "PR_CREATED" and item["pr"] is not None:
                 units.append(item)
             elif item["type"] == "PR_COMMIT":
-                # Only count if not already counted as a repository COMMIT
-                if item["sha"] and item["sha"] in self._sha_to_pr:
-                    continue
+                # Standalone PR commit (not de-duplicated against COMMIT).
                 units.append(item)
-
             elif item["type"] == "COMMIT":
+                # Skip commits that belong to a PR (counted via the PR unit).
                 if item["sha"] and item["sha"] in self._sha_to_pr:
                     continue
                 units.append(item)
@@ -1147,11 +1147,14 @@ class TimelineService:
             if not item["areas"] or item["member"] is None:
                 continue
 
+            # Parallel work: PR creation, unique commits, unique PR commits.
             if item["type"] == "PR_CREATED":
                 pass
             elif item["type"] == "COMMIT":
                 if item["sha"] and item["sha"] in self._sha_to_pr:
                     continue
+            elif item["type"] == "PR_COMMIT":
+                pass
             else:
                 continue
 
@@ -1334,6 +1337,8 @@ class TimelineService:
                 entry["pr_number"] = item["pr"]
             if item["issue"] is not None:
                 entry["issue_number"] = item["issue"]
+            if item["sha"]:
+                entry["sha"] = item["sha"]
             if item["label"]:
                 entry["label"] = item["label"]
 

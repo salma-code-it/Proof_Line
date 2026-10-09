@@ -48,6 +48,7 @@ export default function Timeline() {
   const navigate = useNavigate();
 
   const [project, setProject] = useState(null);
+  const [timeline, setTimeline] = useState(null);
   const [events, setEvents] = useState([]);
   const [memberFilter, setMemberFilter] = useState("All");
   const [typeFilter, setTypeFilter] = useState("All");
@@ -71,6 +72,9 @@ export default function Timeline() {
         if (!active) return;
 
         setProject(projectData);
+        setTimeline(
+          timelineData && !Array.isArray(timelineData) ? timelineData : null
+        );
         setEvents(normalizeTimeline(timelineData));
       } catch (err) {
         if (active) {
@@ -111,29 +115,58 @@ export default function Timeline() {
     });
   }, [events, memberFilter, typeFilter]);
 
+  // Counts align with the project dashboard:
+  // - Commits = unique SHAs (COMMIT + PR_COMMIT), not every row
+  // - PRs     = unique PR numbers (one PR is one unit, not create+merge)
+  // - Events  = backend summary when unfiltered, else filtered rows
   const eventCounts = useMemo(() => {
-    const counts = {
-      total: filtered.length,
+    const commitShas = new Set();
+    let commitNoSha = 0;
+    const prNumbers = new Set();
+    let reviews = 0;
+
+    filtered.forEach((event) => {
+      const raw = getRawType(event);
+
+      if (raw === "COMMIT" || raw === "PR_COMMIT") {
+        const sha = getEventSha(event);
+        if (sha) commitShas.add(sha);
+        else commitNoSha += 1;
+      }
+
+      if (raw === "PR_CREATED" || raw === "PR_MERGED" || raw === "PR_COMMIT") {
+        const n = getPrNumber(event);
+        if (n != null) prNumbers.add(n);
+      }
+
+      if (raw === "REVIEW" || raw === "REVIEW_COMMENT") {
+        reviews += 1;
+      }
+    });
+
+    const noFilters = memberFilter === "All" && typeFilter === "All";
+    const summaryTotal = timeline?.summary?.total_activity_events;
+    const backendPrCount =
+      noFilters && Array.isArray(timeline?.pull_request_timelines)
+        ? timeline.pull_request_timelines.length
+        : null;
+
+    return {
+      total:
+        noFilters && typeof summaryTotal === "number"
+          ? summaryTotal
+          : filtered.length,
       members: new Set(
         filtered
           .map(getMember)
           .filter((name) => name !== "Unknown member")
       ).size,
-      commits: 0,
-      pullRequests: 0,
-      reviews: 0,
+      commits: commitShas.size + commitNoSha,
+      pullRequests:
+        backendPrCount != null ? backendPrCount : prNumbers.size,
+      reviews,
     };
-
-    filtered.forEach((event) => {
-      const type = normalizeType(event);
-
-      if (type === "Commit") counts.commits += 1;
-      if (type === "Pull Request") counts.pullRequests += 1;
-      if (type === "Review") counts.reviews += 1;
-    });
-
-    return counts;
-  }, [filtered]);
+  }, [filtered, memberFilter, typeFilter, timeline]);
 
   if (loading) {
     return (
@@ -191,7 +224,7 @@ export default function Timeline() {
             icon={Activity}
             label="Observable events"
             value={eventCounts.total}
-            description="Events matching filters"
+            description="Activity events (after de-duplication)"
           />
           <SummaryMetric
             icon={Users}
@@ -203,13 +236,13 @@ export default function Timeline() {
             icon={GitCommit}
             label="Commits"
             value={eventCounts.commits}
-            description="Recorded commit events"
+            description="Unique commits (SHA de-duplicated)"
           />
           <SummaryMetric
             icon={GitPullRequest}
             label="Pull requests"
             value={eventCounts.pullRequests}
-            description="Recorded pull-request events"
+            description="Unique pull requests (one PR = one unit)"
           />
         </section>
 
@@ -1049,18 +1082,58 @@ function getMember(event) {
   );
 }
 
-function normalizeType(event) {
-  const raw = String(
+function getRawType(event) {
+  return String(
     event.event_type ||
       event.type ||
       event.metadata?.event_type ||
       "Activity"
-  ).toUpperCase();
+  )
+    .trim()
+    .toUpperCase();
+}
 
-  if (raw.includes("COMMIT")) return "Commit";
-  if (raw.includes("PR_") || raw.includes("PULL")) {
-    return "Pull Request";
+function getEventSha(event) {
+  const sha =
+    event.sha ||
+    event.metadata?.sha ||
+    event.metadata_json?.sha ||
+    null;
+  return typeof sha === "string" && sha.length > 0 ? sha : null;
+}
+
+function getPrNumber(event) {
+  const raw =
+    event.pr_number ??
+    event.pr ??
+    event.metadata?.pr_number ??
+    event.metadata?.number ??
+    event.metadata_json?.pr_number ??
+    event.metadata_json?.number ??
+    null;
+  if (raw == null || raw === "") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+function normalizeType(event) {
+  const raw = getRawType(event);
+
+  // Exact types first so PR_COMMIT is a Commit, not a Pull Request.
+  if (raw === "COMMIT" || raw === "PR_COMMIT") return "Commit";
+  if (raw === "PR_CREATED" || raw === "PR_MERGED") return "Pull Request";
+  if (raw === "REVIEW" || raw === "REVIEW_COMMENT") {
+    return raw === "REVIEW_COMMENT" ? "Comment" : "Review";
   }
+  if (raw === "ISSUE_CREATED" || raw === "ISSUE_COMMENT") {
+    return raw === "ISSUE_COMMENT" ? "Comment" : "Issue";
+  }
+  if (raw === "CI_RUN") return "CI/CD";
+  if (raw === "BRANCH_CREATED") return "Branch";
+
+  // Fallbacks for unexpected strings
+  if (raw.includes("COMMIT")) return "Commit";
+  if (raw.includes("PR_") || raw.includes("PULL")) return "Pull Request";
   if (raw.includes("REVIEW")) return "Review";
   if (raw.includes("COMMENT")) return "Comment";
   if (raw.includes("ISSUE")) return "Issue";

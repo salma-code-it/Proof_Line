@@ -153,15 +153,16 @@ docs/
     ├── 02-create-project.png
     ├── 03-dashboard.png
     ├── 04-member-detail.png
-    ├── 05-timeline.png
-    ├── 06-task-matching.png
-    └── 07-understanding-check.png
+    ├── 05-evidence-graph.png
+    ├── 06-timeline.png
+    ├── 07-task-matching.png
+    └── 08-understanding-check.png
 ```
 
 Example Markdown:
 
 ```md
-![ProofLine project dashboard](screenshots/03-dashboard.png)
+![ProofLine project dashboard](docs/screenshots/03-dashboard.png)
 ```
 
 ## Technology Stack

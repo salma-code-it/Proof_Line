@@ -242,9 +242,25 @@ class GitHubService:
 
      
     # COMMITS
-    async def get_commits(self,owner: str,repo: str,) -> list[dict[str, Any]]:
+    async def get_commits(
+        self,
+        owner: str,
+        repo: str,
+        since: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Fetch commits. Optional ``since`` is an ISO-8601 timestamp
+        (GitHub only returns commits at or after that time).
+        """
+        params: dict[str, Any] = {}
+        if since:
+            params["since"] = since
 
-        return await self._get_pages(f"/repos/{owner}/{repo}/commits",self.MAX_COMMIT_PAGES,)
+        return await self._get_pages(
+            f"/repos/{owner}/{repo}/commits",
+            self.MAX_COMMIT_PAGES,
+            params or None,
+        )
 
     async def get_commit(self,owner: str,repo: str,sha: str) -> dict[str, Any]:
         """
@@ -293,8 +309,12 @@ class GitHubService:
                 if isinstance(file, dict)
             ]
 
-            # Useful author/committer information
+            # Preserve GitHub login when enriching (do not wipe login).
             commit_data = (details.get("commit") or {})
+            details_author_user = details.get("author") or {}
+            details_committer_user = details.get("committer") or {}
+            prev_author = compact.get("author") or {}
+            prev_committer = compact.get("committer") or {}
 
             if isinstance(commit_data, dict):
 
@@ -309,6 +329,10 @@ class GitHubService:
                 )
 
                 compact["author"] = {
+                    "login": (
+                        prev_author.get("login")
+                        or details_author_user.get("login")
+                    ),
                     "name": author_data.get(
                         "name"
                     ),
@@ -321,6 +345,10 @@ class GitHubService:
                 }
 
                 compact["committer"] = {
+                    "login": (
+                        prev_committer.get("login")
+                        or details_committer_user.get("login")
+                    ),
                     "name": committer_data.get(
                         "name"
                     ),
@@ -687,15 +715,20 @@ class GitHubService:
         self,
         owner: str,
         repo: str,
+        since: str | None = None,
     ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {
+            "state": "all",
+            "sort": "updated",
+            "direction": "desc",
+        }
+        if since:
+            params["since"] = since
+
         data = await self._get_pages(
             f"/repos/{owner}/{repo}/issues",
             self.MAX_ISSUE_PAGES,
-            {
-                "state": "all",
-                "sort": "updated",
-                "direction": "desc",
-            },
+            params,
         )
 
         issues: list[dict[str, Any]] = []
@@ -934,6 +967,3 @@ class GitHubService:
                 "html_url"
             ),
         }
-
-
-
