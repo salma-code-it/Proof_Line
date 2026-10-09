@@ -304,7 +304,7 @@ LLM responses can be malformed, incomplete, or unavailable. The backend may atte
 Replace the placeholder with the actual repository URL:
 
 ```bash
-git clone <your-repository-url>
+git clone https://github.com/salma-code-it/Proof_Line.git
 cd proofline
 ```
 
@@ -313,21 +313,21 @@ cd proofline
 **Windows PowerShell:**
 
 ```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
+py -m venv venv
+.\venv\Scripts\Activate.ps1
 ```
 
 **Windows Command Prompt:**
 
 ```bat
-py -m venv .venv
-.venv\Scripts\activate.bat
+py -m venv venv
+venv\Scripts\activate.bat
 ```
 
 **Linux / macOS:**
 
 ```bash
-python3 -m venv .venv
+python3 -m venv venv
 source .venv/bin/activate
 ```
 
