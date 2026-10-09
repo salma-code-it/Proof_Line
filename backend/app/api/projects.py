@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +26,7 @@ ANALYSIS_DIR = Path("analysis_results")
 
 
 MAX_PRS_ANALYZED = 150
-COMMIT_DETAIL_LIMIT = 200
+COMMIT_DETAIL_LIMIT = 500
 PR_CONCURRENCY = 4
 ISSUE_COMMENT_ISSUE_LIMIT = 40
 ISSUE_CONCURRENCY = 4
@@ -34,8 +34,50 @@ CI_RUN_LIMIT = 150
 MAX_FILES_PER_EVENT = 300
 MAX_MEMBERS_FROM_CONTRIBUTORS = 30
 
+# Only collect GitHub activity from this recent window (large repos).
+LOOKBACK_DAYS = 90
+
 # Projects currently being analyzed.
 _RUNNING: set[int] = set()
+
+
+def _dt_to_iso(value: datetime) -> str:
+    """Format a timezone-aware datetime as GitHub ISO-8601 UTC."""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _in_window(value: Any, since: datetime) -> bool:
+    """True if timestamp string/datetime is at or after ``since``."""
+    if isinstance(value, datetime):
+        ts = value
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        else:
+            ts = ts.astimezone(timezone.utc)
+        return ts >= since
+
+    parsed = _ts(value)
+    if parsed is None:
+        return False
+    return parsed >= since
+
+
+def _window_anchor(repository: dict[str, Any]) -> datetime:
+    """
+    End of the 3-month window.
+
+    Prefer the repository's last push/update so student projects that
+    finished a few months ago still produce evidence. Fall back to now.
+    """
+    for key in ("pushed_at", "updated_at"):
+        ts = _ts(repository.get(key))
+        if ts is not None:
+            return ts
+    return _utc_now()
 
 
 def _utc_now() -> datetime:
@@ -512,26 +554,37 @@ def _add_pull_request_events(sink: _EventSink,bundle: dict[str, Any]) -> None:
 
     for commit in bundle["commits"]:
         author_data = commit.get("author") or {}
+        committer_data = commit.get("committer") or {}
         sha = commit.get("sha")
+        login = _login(
+            author_data.get("login")
+        ) or _login(
+            committer_data.get("login")
+        )
+        timestamp = _ts(
+            author_data.get("date")
+        ) or _ts(
+            committer_data.get("date")
+        )
 
         sink.add(
-            login=_login(
-                author_data.get("login")
-            ),
+            login=login,
             event_type="PR_COMMIT",
-            timestamp=_ts(
-                author_data.get("date")
-            ),
+            timestamp=timestamp,
             source_id=(
                 f"pr-commit-{number}-{sha}"
             ),
             artifact=_first_line(
                 commit.get("message")
             ),
+            keep_unattributed=True,
             metadata={
                 "pr_number": number,
                 "sha": sha,
                 "branch_name": branch,
+                "message": (
+                    commit.get("message") or ""
+                )[:300],
             },
         )
 
@@ -581,8 +634,14 @@ def _add_commit_events(
         if has_details and files:
             detailed += 1
 
+        commit_login = login_by_sha.get(sha) or _login(
+            author_data.get("login")
+        ) or _login(
+            committer_data.get("login")
+        )
+
         sink.add(
-            login=login_by_sha.get(sha),
+            login=commit_login,
             event_type="COMMIT",
             timestamp=_ts(
                 author_data.get("date")
@@ -950,16 +1009,33 @@ async def _run_analysis(db: Session,project: Project) -> dict[str, Any]:
     repo = project.repo
 
     member_map = _member_map(project)
-      
-    # 1. COLLECT
+
+    # ------------------------------------------------------------------
+    # 1. Repository metadata first (needed to anchor the 3-month window)
+    # ------------------------------------------------------------------
+    try:
+        repository = await github.get_repository(owner, repo)
+    except GitHubAPIError as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"GitHub collection failed: {error}",
+        ) from error
+
+    # Window = 3 months ending at the repo's last push (not "today").
+    # Student projects that finished last semester still get full evidence.
+    window_end = _window_anchor(repository)
+    since_dt = window_end - timedelta(days=LOOKBACK_DAYS)
+    since_iso = _dt_to_iso(since_dt)
+    window_end_iso = _dt_to_iso(window_end)
+
+    # ------------------------------------------------------------------
+    # 2. Collect commits / PRs / issues / events / CI
+    # ------------------------------------------------------------------
     results = await asyncio.gather(
-        github.get_repository(
-            owner,
-            repo,
-        ),
         github.get_commits(
             owner,
             repo,
+            since=since_iso,
         ),
         github.get_pull_requests(
             owner,
@@ -978,6 +1054,7 @@ async def _run_analysis(db: Session,project: Project) -> dict[str, Any]:
             github.get_issues(
                 owner,
                 repo,
+                since=since_iso,
             ),
             warnings,
             "issues",
@@ -995,58 +1072,95 @@ async def _run_analysis(db: Session,project: Project) -> dict[str, Any]:
         return_exceptions=True,
     )
 
-    # First three calls are required.
-    for required in results[:3]:
-        if isinstance(
-            required,
-            GitHubAPIError,
-        ):
+    # Commits and PRs are required.
+    for required in results[:2]:
+        if isinstance(required, GitHubAPIError):
             raise HTTPException(
                 status_code=502,
-                detail=(
-                    f"GitHub collection failed: "
-                    f"{required}"
-                ),
+                detail=f"GitHub collection failed: {required}",
             ) from required
-
         if isinstance(required, Exception):
             raise HTTPException(
                 status_code=500,
-                detail=(
-                    "Internal error during collection: "
-                    f"{required}"
-                ),
+                detail=f"Internal error during collection: {required}",
             ) from required
 
-    repository = results[0]
-    raw_commits = results[1]
-    pull_requests = results[2]
+    raw_commits = results[0]
+    pull_requests_all = results[1]
+
+    # Fallback: if the windowed commit query is empty, collect page-capped
+    # commits without a date filter so student repos still get evidence.
+    window_fallback_used = False
+    if not raw_commits:
+        try:
+            raw_commits = await github.get_commits(owner, repo)
+            window_fallback_used = True
+            warnings.append(
+                "No commits in the 3-month window relative to the "
+                "repository last push; fell back to recent page-capped commits."
+            )
+        except GitHubAPIError as error:
+            warnings.append(f"commit fallback: {error}")
+            raw_commits = []
 
     repository_events = (
+        results[2]
+        if not isinstance(results[2], Exception)
+        else []
+    )
+
+    issues = (
         results[3]
         if not isinstance(results[3], Exception)
         else []
     )
 
-    issues = (
+    workflow_runs_all = (
         results[4]
         if not isinstance(results[4], Exception)
         else []
     )
 
-    workflow_runs = (
-        results[5]
-        if not isinstance(results[5], Exception)
-        else []
-    )
-
-      
-    # 2. PULL REQUESTS
-    analyzed_prs = [
+    # PRs active inside the window (created / updated / merged).
+    pull_requests = [
         pr
-        for pr in pull_requests
+        for pr in pull_requests_all
         if pr.get("number")
-    ][:MAX_PRS_ANALYZED]
+        and (
+            _in_window(pr.get("created_at"), since_dt)
+            or _in_window(pr.get("updated_at"), since_dt)
+            or _in_window(pr.get("merged_at"), since_dt)
+        )
+    ]
+
+    # Fallback: keep page-capped PRs if the window filtered everything out.
+    if not pull_requests and pull_requests_all:
+        pull_requests = [
+            pr for pr in pull_requests_all if pr.get("number")
+        ]
+        window_fallback_used = True
+        warnings.append(
+            "No pull requests inside the 3-month window; "
+            "using the recent page-capped PR list instead."
+        )
+
+    repository_events = [
+        ev
+        for ev in repository_events
+        if _in_window(ev.get("created_at"), since_dt)
+    ] or repository_events
+
+    workflow_runs = [
+        run
+        for run in workflow_runs_all
+        if (
+            _in_window(run.get("updated_at"), since_dt)
+            or _in_window(run.get("created_at"), since_dt)
+        )
+    ] or workflow_runs_all
+
+    # 3. PULL REQUESTS (deep analysis)
+    analyzed_prs = pull_requests[:MAX_PRS_ANALYZED]
 
     semaphore = asyncio.Semaphore(
         PR_CONCURRENCY
@@ -1088,13 +1202,17 @@ async def _run_analysis(db: Session,project: Project) -> dict[str, Any]:
 
       
     # 4. COMMIT DETAILS
-    login_by_sha = {
-        c["sha"]: _login(
+    login_by_sha: dict[str, str | None] = {}
+    for c in raw_commits:
+        sha = c.get("sha")
+        if not sha:
+            continue
+        login = _login(
             (c.get("author") or {}).get("login")
+        ) or _login(
+            (c.get("committer") or {}).get("login")
         )
-        for c in raw_commits
-        if c.get("sha")
-    }
+        login_by_sha[sha] = login
 
     candidates = [
         c
@@ -1248,6 +1366,11 @@ async def _run_analysis(db: Session,project: Project) -> dict[str, Any]:
     analysis["tasks"] = _task_dicts(project)
 
     analysis["collection"] = {
+        "window_days": LOOKBACK_DAYS,
+        "window_since": since_iso,
+        "window_end": window_end_iso,
+        "window_anchor": "repository_last_push",
+        "window_fallback_used": window_fallback_used,
         "commits_collected": len(
             raw_commits
         ),
@@ -1256,6 +1379,9 @@ async def _run_analysis(db: Session,project: Project) -> dict[str, Any]:
         ),
         "pull_requests_collected": len(
             pull_requests
+        ),
+        "pull_requests_listed_total": len(
+            pull_requests_all
         ),
         "pull_requests_analyzed": len(
             analyzed_prs

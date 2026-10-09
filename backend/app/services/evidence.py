@@ -605,11 +605,13 @@ class EvidenceEngine:
             member.id: {
                 "events": [],
                 "commits": [],
+                "commit_shas": set(),
                 "prs": {},
                 "reviews": [],
                 "comments": [],
                 "issues": [],
                 "ci_runs": [],
+                "branches": set(),
 
                 "files": set(),
                 "files_by_kind": {
@@ -664,58 +666,71 @@ class EvidenceEngine:
                 row["files_by_kind"][kind].add(path)
 
               
-            # COMMIT
-              
-
-            if event_type == "COMMIT":
-
-                additions = self._safe_int(
-                    metadata.get("additions")
+            # COMMIT / PR_COMMIT — same SHA counted once
+            if event_type in {"COMMIT", "PR_COMMIT"}:
+                sha = metadata.get("sha")
+                sha_key = (
+                    sha.lower()
+                    if isinstance(sha, str) and sha
+                    else None
                 )
 
-                deletions = self._safe_int(
-                    metadata.get("deletions")
+                if sha_key and sha_key in row["commit_shas"]:
+                    pass
+                else:
+                    if sha_key:
+                        row["commit_shas"].add(sha_key)
+
+                    additions = self._safe_int(
+                        metadata.get("additions")
+                    )
+                    deletions = self._safe_int(
+                        metadata.get("deletions")
+                    )
+
+                    row["additions"] += additions
+                    row["deletions"] += deletions
+
+                    counts = self._file_counts(files)
+
+                    branch_name = metadata.get("branch_name")
+                    if isinstance(branch_name, str) and branch_name.strip():
+                        row["branches"].add(branch_name.strip())
+
+                    row["commits"].append(
+                        {
+                            "sha": sha,
+                            "message": (
+                                self._compact_text(
+                                    metadata.get("message")
+                                    or event.artifact,
+                                    250,
+                                )
+                            ),
+                            "date": (
+                                event.timestamp.isoformat()
+                                if event.timestamp
+                                else None
+                            ),
+                            "url": metadata.get("url"),
+                            "files": files[:50],
+                            "file_kinds": counts,
+                            "additions": additions,
+                            "deletions": deletions,
+                            "pr_number": metadata.get("pr_number"),
+                            "from_pr": event_type == "PR_COMMIT",
+                        }
+                    )
+
+            elif event_type == "BRANCH_CREATED":
+                branch_name = (
+                    metadata.get("branch_name")
+                    or event.artifact
                 )
+                if isinstance(branch_name, str) and branch_name.strip():
+                    row["branches"].add(branch_name.strip())
 
-                row["additions"] += additions
-                row["deletions"] += deletions
-
-                counts = self._file_counts(files)
-
-                row["commits"].append(
-                    {
-                        "sha": metadata.get("sha"),
-
-                        "message": (
-                            self._compact_text(
-                                metadata.get("message")
-                                or event.artifact,
-                                250,
-                            )
-                        ),
-
-                        "date": (
-                            event.timestamp.isoformat()
-                            if event.timestamp
-                            else None
-                        ),
-
-                        "url": metadata.get("url"),
-
-                        "files": files[:50],
-
-                        "file_kinds": counts,
-
-                        "additions": additions,
-
-                        "deletions": deletions,
-                    }
-                )
-
-              
             # PR CREATED
-              
-
             elif event_type == "PR_CREATED":
 
                 number = self._event_pr_numbers.get(
@@ -723,6 +738,10 @@ class EvidenceEngine:
                 )
 
                 if number is not None:
+
+                    branch_name = metadata.get("branch_name")
+                    if isinstance(branch_name, str) and branch_name.strip():
+                        row["branches"].add(branch_name.strip())
 
                     row["prs"].setdefault(
                         number,
@@ -735,9 +754,7 @@ class EvidenceEngine:
                                     250,
                                 )
                             ),
-                            "branch": metadata.get(
-                                "branch_name"
-                            ),
+                            "branch": branch_name,
                             "base_branch": metadata.get(
                                 "base_branch"
                             ),
@@ -988,6 +1005,9 @@ class EvidenceEngine:
                         "ci_runs": len(
                             row["ci_runs"]
                         ),
+                        "branches": len(
+                            row["branches"]
+                        ),
                         "active_days": active_days,
                     },
 
@@ -1055,6 +1075,9 @@ class EvidenceEngine:
                         ],
                         "issues": row["issues"],
                         "ci_runs": row["ci_runs"],
+                        "branches": sorted(
+                            row["branches"]
+                        ),
 
                         "files": {
                             kind: sorted(
