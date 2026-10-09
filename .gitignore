@@ -1,5 +1,7 @@
 backend/README.md
 frontend/README.md
+backend/analysis_results/*
+backend/llm_analysis/*
 __pycache__/
 *.ipynb_checkpoints/
 *.ipynb
